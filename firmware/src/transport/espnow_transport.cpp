@@ -77,6 +77,9 @@ bool EspNowTransport::begin() {
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
 #ifdef ESP8266
+  // EIRP compliance: 17.5 dBm + 2 dBi antenna = 19.5 dBm EIRP <= 20 dBm
+  // (docs/compliance.md)
+  WiFi.setOutputPower(17.5);
   wifi_set_channel(FLR_CHANNEL);          // BEFORE esp_now_init (quirk)
   if (esp_now_init() != 0) return false;
   // SDK prototypes take non-const u8* though the keys are read-only.
@@ -87,6 +90,10 @@ bool EspNowTransport::begin() {
     esp_now_add_peer(peer_, ESP_NOW_ROLE_COMBO, FLR_CHANNEL,
                      const_cast<uint8_t*>(DEV_LMK), 16);
 #else
+  // EIRP compliance: 17.5 dBm + 2 dBi antenna = 19.5 dBm EIRP <= 20 dBm
+  // (docs/compliance.md). Core 2.0.x wifi_power_t has no 17.5 dBm step,
+  // so use the 0.25 dBm-unit IDF API: 70 = 17.5 dBm.
+  esp_wifi_set_max_tx_power(70);
   esp_wifi_set_channel(FLR_CHANNEL, WIFI_SECOND_CHAN_NONE);
   if (esp_now_init() != ESP_OK) return false;
   esp_now_set_pmk(DEV_PMK);

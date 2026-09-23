@@ -6,7 +6,9 @@ ETSI EN 300 328 / EU decision 2021/1067.
 ## EIRP
 
 - Max 20 dBm (100 mW) including antenna gain.
-- Firmware defaults: ESP-NOW at the radio's default power; FLRC tier will
+- Firmware defaults: ESP-NOW tier TX power is pinned at 17.5 dBm in
+  firmware (per transport begin); with a 2 dBi antenna EIRP =
+  19.5 dBm, within the 20 dBm envelope. FLRC tier will
   default to 12.5 dBm (SX1280 hardware max) with a 2 dBi antenna.
 - If antenna gain > 7.5 dBi is configured, firmware must auto-reduce TX
   power and warn. Configuration surfaces must never offer settings that
