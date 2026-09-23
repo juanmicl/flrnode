@@ -20,11 +20,14 @@ to the PC for the whole run (USB powers them and gives us the logs).
    Write down A's MAC. Close the monitor (Ctrl+] or Ctrl+T then Ctrl+X).
 3. Unplug A. Plug board B. Flash the pinger:
    `pio run -e d1_mini_pinger -t upload`. Note B's MAC. Close monitor.
-4. Rebuild each role pointing at the OTHER board's MAC and reflash.
+4. Plug A back in (both boards now USB-connected). Rebuild each role
+   pointing at the OTHER board's MAC and reflash.
    For A (ponger, pointing at B):
    `export PLATFORMIO_BUILD_FLAGS='-DFLR_PEER_MAC="<B-MAC>"'`
+   (verified by the controller: PLATFORMIO_BUILD_FLAGS appends to the
+   env flags — the role define survives; no extra flags needed)
    `pio run -e d1_mini_ponger -t upload`
-   For B (pinger, pointing at A): replug A, then on B:
+   For B (pinger, pointing at A):
    `export PLATFORMIO_BUILD_FLAGS='-DFLR_PEER_MAC="<A-MAC>"'`
    `pio run -e d1_mini_pinger -t upload`
    Then `unset PLATFORMIO_BUILD_FLAGS`.
@@ -58,6 +61,11 @@ Paste into STATUS.md (session log):
 
 ## Troubleshooting
 
+- No `m1_result` after ~2 min: the pinger has no stall guard by design;
+  power-cycle both boards and re-run — if it recurs, keep logs (it
+  indicates `send()` failing persistently, e.g. radio wedged or peer
+  entry wrong).
+- Loss of 1-3 frames only in the first second = boot race; just re-run.
 - rx == 0 on both: compare `"channel"` in both boot lines; check that
   each peer MAC equals the OTHER board's actual mac; re-flash if unsure.
 - Occasional loss on a busy desk: re-run with a phone WiFi analyzer to

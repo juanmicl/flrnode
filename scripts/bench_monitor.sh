@@ -14,6 +14,7 @@ mkdir -p logs
 trap 'kill 0' EXIT INT TERM
 ( awk -v P=PONGER '{ printf "[%s] %s\n", P, $0; fflush(); }' < "$PONGER" \
     | tee logs/ponger.log ) &
+sleep 2  # stagger the pinger reset: hardens against the boot race
 ( awk -v P=PINGER '{ printf "[%s] %s\n", P, $0; fflush(); }' < "$PINGER" \
     | tee logs/pinger.log ) &
 wait

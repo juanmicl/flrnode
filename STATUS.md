@@ -27,8 +27,8 @@ Living state. Update after each session (AGENTS.md).
 ## Session log
 
 - 2026-09-23: market study (internal), README/AGENTS/protocol cleanup,
-  M1 design spec (oracle-reviewed, v2), implementation plan. All 12 plan
-  tasks implemented the same day (every task review-approved): native
+  M1 design spec (oracle-reviewed, v2), implementation plan. All plan
+  tasks implemented; every task went through the review gate: native
   suite 21/21 across 6 suites, embedded gate 4/4 [SUCCESS], EIRP pinned
   at 17.5 dBm. Awaiting the hardware acceptance run
   (TEST-CHECKLIST.md); M1 closes when its results are pasted here.
