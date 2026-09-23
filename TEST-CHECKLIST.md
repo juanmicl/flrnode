@@ -24,12 +24,13 @@ to the PC for the whole run (USB powers them and gives us the logs).
    BOARD AT A TIME so the upload port is never ambiguous (two identical
    CH340 adapters make auto-detection a coin flip):
    a. Unplug B, plug in A only. Flash A (ponger, pointing at B's MAC):
-      `export PLATFORMIO_BUILD_FLAGS='-DFLR_PEER_MAC="<B-MAC>"'`
+      `export PLATFORMIO_BUILD_FLAGS='-DFLR_PEER_MAC=\"<B-MAC>\"'`
       `pio run -e d1_mini_ponger -t upload`
-      (verified by the controller: PLATFORMIO_BUILD_FLAGS appends to the
-      env flags — the role define survives; no extra flags needed)
+      (bench-verified: PLATFORMIO_BUILD_FLAGS appends to the env flags and
+      the role define survives; the inner quotes MUST be escaped as \" —
+      SCons strips bare quotes and a real MAC breaks the build)
    b. Unplug A, plug in B only. Flash B (pinger, pointing at A's MAC):
-      `export PLATFORMIO_BUILD_FLAGS='-DFLR_PEER_MAC="<A-MAC>"'`
+      `export PLATFORMIO_BUILD_FLAGS='-DFLR_PEER_MAC=\"<A-MAC>\"'`
       `pio run -e d1_mini_pinger -t upload`
       `unset PLATFORMIO_BUILD_FLAGS`
    c. Plug A back in: both boards connected, ready for Phase 2.
