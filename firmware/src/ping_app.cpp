@@ -63,7 +63,8 @@ void PingApp::onFrame(const uint8_t* data, size_t len, int16_t /*rssi*/) {
   const uint32_t bit = d.seq - 1;
   if (seen_[bit / 8] & (1u << (bit % 8))) return;  // late/duplicate
   seen_[bit / 8] |= (1u << (bit % 8));
-  const uint16_t rtt = (uint16_t)(nowMs_ - d.ts);  // last tick as "now"
+  // Last tick as "now"; valid RTT < 65536 ms by construction (grace is 5 s).
+  const uint16_t rtt = (uint16_t)(nowMs_ - d.ts);
   rttLast_ = rtt;
   insertRtt_(rtt);
   ++rx_;
@@ -71,6 +72,8 @@ void PingApp::onFrame(const uint8_t* data, size_t len, int16_t /*rssi*/) {
 
 void PingApp::insertRtt_(uint16_t ms) {
   // Insert ascending; array holds rx_ valid entries before this insert.
+  // The clamp below is unreachable: bitmap dedup caps rx_ below
+  // kTotalFrames.
   uint32_t i = (rx_ < kTotalFrames) ? rx_ : (kTotalFrames - 1);
   while (i > 0 && rtt_[i - 1] > ms) { rtt_[i] = rtt_[i - 1]; --i; }
   rtt_[i] = ms;

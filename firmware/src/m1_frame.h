@@ -17,10 +17,12 @@ struct M1Decoded {
 };
 
 // Context: any. Blocking: never. Failure: false on bad type.
+// `out` must be non-null.
 bool m1Encode(uint8_t out[M1_FRAME_LEN], uint8_t type, uint32_t seq,
               uint32_t ts);
 
 // Context: any. Blocking: never. Failure: false on bad magic/length/type.
+// `in` and `out` must be non-null.
 bool m1Decode(const uint8_t* in, size_t len, M1Decoded* out);
 
 }  // namespace flr

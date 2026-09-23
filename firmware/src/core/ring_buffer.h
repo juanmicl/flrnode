@@ -23,17 +23,21 @@ class RingBuffer {
  public:
   // Producer side. Copies len bytes into the next free slot.
   // Context: radio/WiFi callback or test producer thread.
-  // Blocking: never. Failure: returns false when full; overflowCount()++.
+  // Blocking: never. Failure: returns false when full or len > 250;
+  // overflowCount()++.
   bool push(const uint8_t* data, uint16_t len, int16_t rssi);
 
-  // Consumer side. Context: main loop / test consumer.
+  // Consumer side. `out` must be non-null.
+  // Context: main loop / test consumer.
   // Blocking: never. Failure: returns false when empty.
   bool pop(RingFrame* out);
 
-  // Total frames dropped because the ring was full. Context: any.
+  // Rejected push attempts (ring full or oversized). Context: any.
+  // Blocking: never.
   uint32_t overflowCount() const;
 
   // Drop everything and clear counters. Context: setup/tests only.
+  // Blocking: never.
   void reset();
 
  private:
@@ -43,6 +47,7 @@ class RingBuffer {
   RingFrame buf_[kSlots];
   std::atomic<size_t> head_{0};   // producer index
   std::atomic<size_t> tail_{0};   // consumer index
+  // Incremented via load/store; producer-only — no libatomic on lx106.
   std::atomic<uint32_t> overflow_{0};
 };
 

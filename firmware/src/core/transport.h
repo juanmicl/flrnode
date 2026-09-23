@@ -9,7 +9,7 @@ struct TransportStats {
   uint32_t txFail = 0;      // failed after the single M1 retry (real loss)
   uint32_t txRetry = 0;     // retries issued from pump()
   uint32_t rx = 0;          // frames delivered upward
-  uint32_t ringOverflow = 0;
+  uint32_t ringOverflow = 0;  // rejected push attempts incl. len > 250
 };
 
 // Radio-agnostic transport. Implementations: EspNowTransport (hardware),
@@ -30,7 +30,7 @@ class Transport {
   virtual void onFrame(FrameCb cb, void* ctx) = 0;
   // Loop-side work: drain the RX ring into the callback and run the
   // send-fail retry. Context: main loop / test stepper.
-  // Blocking: bounded by ring capacity.
+  // Blocking: bounded by ring capacity. Failure: none.
   virtual void pump() = 0;
   // Cumulative counters since construction/reset.
   // Context: any. Blocking: never. Failure: none.

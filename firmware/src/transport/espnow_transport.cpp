@@ -137,7 +137,7 @@ void EspNowTransport::onFrame(FrameCb cb, void* ctx) { cb_ = cb; ctx_ = ctx; }
 
 void EspNowTransport::pump() {
   // Single immediate retry, decided here (loop context) — never from the
-  // WiFi callback (reentrancy risk; spec decision 10).
+  // WiFi callback (reentrancy risk; loop-context retry by design).
   if (sendFailed_.load(std::memory_order_relaxed)) {
     sendFailed_.store(false, std::memory_order_relaxed);
     if (!retried_) {

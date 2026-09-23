@@ -54,7 +54,7 @@ static void test_full_exchange_zero_loss() {
   TEST_ASSERT_TRUE(result.find("\"t\":\"m1_result\"") != std::string::npos);
   TEST_ASSERT_TRUE(result.find("\"loss\":0") != std::string::npos);
   TEST_ASSERT_TRUE(result.find("\"verdict\":\"PASS\"") != std::string::npos);
-  // Required keys (spec decision 13: stats assertions live here).
+  // Required keys (stats assertions folded into this suite by design).
   for (const char* key : {"\"rtt_p50_ms\"", "\"rtt_p95_ms\"", "\"rtt_max_ms\"",
                           "\"send_fail\"", "\"ring_overflow\"", "\"channel\"",
                           "\"dist_m\"", "\"tx\":1000", "\"rx\":1000"}) {

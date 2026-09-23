@@ -11,6 +11,7 @@ uint16_t crc16Xmodem(const uint8_t* data, size_t len);
 
 // Build one HDLC wire frame: FLAG, stuffed [TYPE, PAYLOAD, FCS_LO, FCS_HI],
 // FLAG. FCS is little-endian (FCS_LO first), per protocol.md 2.1 rule 3.
+// Uses ~515 B of stack.
 // Context: any. Blocking: O(n). Failure: returns 0 if len > 512 or the
 // output does not fit in outCap.
 size_t hdlcFrame(uint8_t innerType, const uint8_t* payload, size_t len,
@@ -28,7 +29,8 @@ class HdlcDeframer {
   void begin(Cb cb, void* ctx);
 
   // Consume one wire byte; complete frames are delivered via the callback.
-  // Context: single feeding task. Blocking: never (O(1)). Failure: none;
+  // Context: single feeding task. Blocking: never — O(1) amortized (CRC
+  // over accumulated bytes on the closing flag). Failure: none;
   // malformed input is counted in resyncCount().
   void feed(uint8_t b);
 

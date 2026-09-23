@@ -10,7 +10,9 @@ Living state. Update after each session (AGENTS.md).
 - [ ] M4 FLRC transport + benchmarks
 - [ ] M5 Web flasher + launch
 
-## M1 amendments (spec: docs/internal/specs/2026-09-23-m1-firmware-skeleton-design.md)
+## M1 amendments
+
+These amendments stand on their own as the binding M1 scope decisions.
 
 - Acceptance runs unicast + CCMP on the D1 mini pair. Broadcast was
   dropped: no MAC ACK made 0%-loss environment-dependent, and unencrypted
@@ -27,7 +29,7 @@ Living state. Update after each session (AGENTS.md).
 ## Session log
 
 - 2026-09-23: market study (internal), README/AGENTS/protocol cleanup,
-  M1 design spec (oracle-reviewed, v2), implementation plan. All plan
+  M1 design spec (independently reviewed, v2), implementation plan. All plan
   tasks implemented; every task went through the review gate: native
   suite 21/21 across 6 suites, embedded gate 4/4 [SUCCESS], EIRP pinned
   at 17.5 dBm. Awaiting the hardware acceptance run

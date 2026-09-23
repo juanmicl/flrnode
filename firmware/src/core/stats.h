@@ -11,7 +11,8 @@ using SinkFn = void (*)(void* ctx, const char* line);
 // Failure: none; sink == nullptr is a no-op (headless tests).
 void emitLine(void* ctx, SinkFn sink, const char* line);
 
-// Percentile (0..100) over an ascending sorted array. Context: any.
+// Percentile (0..100, clamped) over an ascending sorted array, nearest-rank
+// (p=50 with even n → lower median). Context: any.
 // Blocking: O(1). Failure: returns 0 when n == 0.
 uint16_t percentileOf(const uint16_t* sortedAsc, size_t n, size_t p);
 

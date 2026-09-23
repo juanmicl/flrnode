@@ -46,7 +46,9 @@ to the PC for the whole run (USB powers them and gives us the logs).
    pass them in the right order — the script does not auto-detect.
    NOTE: opening a serial port asserts DTR and RESETS a D1 mini, so the
    ponger resets first and the pinger second: the required power-on
-   order happens automatically. Watch for both boot lines.
+   order happens automatically. Watch for both boot lines. Each board
+   prints two boot lines (setup's rich line, then the app's role line) —
+   both are normal.
 3. Wait ~110 s. The pinger prints:
    `{"t":"m1_result",...,"verdict":"PASS"}` (or FAIL).
    The ponger prints `{"t":"pong_final",...}` a few seconds later.
