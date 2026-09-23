@@ -91,6 +91,9 @@ bool EspNowTransport::begin() {
   WiFi.setOutputPower(17.5);
   wifi_set_channel(FLR_CHANNEL);          // BEFORE esp_now_init (quirk)
   if (esp_now_init() != 0) return false;
+  // The ESP8266 espnow API requires the node's own role before any TX;
+  // without it esp_now_send returns -3 on every call (bench-verified).
+  esp_now_set_self_role(ESP_NOW_ROLE_COMBO);
   // SDK prototypes take non-const u8* though the keys are read-only.
   esp_now_set_kok(const_cast<uint8_t*>(DEV_PMK), 16);
   esp_now_register_recv_cb(onRecvCb);
