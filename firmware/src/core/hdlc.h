@@ -22,9 +22,23 @@ size_t hdlcFrame(uint8_t innerType, const uint8_t* payload, size_t len,
 class HdlcDeframer {
  public:
   using Cb = void (*)(void* ctx, uint8_t type, const uint8_t* payload, size_t len);
+
+  // Bind the frame callback and start clean.
+  // Context: setup. Blocking: never. Failure: none. Implicitly resets all state.
   void begin(Cb cb, void* ctx);
+
+  // Consume one wire byte; complete frames are delivered via the callback.
+  // Context: single feeding task. Blocking: never (O(1)). Failure: none;
+  // malformed input is counted in resyncCount().
   void feed(uint8_t b);
-  uint32_t resyncCount() const;  // junk runs + CRC failures + oversize
+
+  // Authoritative resync counter: junk runs + CRC failures + invalid
+  // escapes + oversize chunks.
+  // Context: any. Blocking: never.
+  uint32_t resyncCount() const;
+
+  // Clear accumulator, escape state and resync counter.
+  // Context: any. Blocking: never.
   void reset();
  private:
   static constexpr size_t kMaxAcc = 515;  // TYPE + 512 payload + 2 FCS

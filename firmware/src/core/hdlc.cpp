@@ -72,7 +72,11 @@ void HdlcDeframer::feed(uint8_t b) {
   if (accLen_ < kMaxAcc) {
     acc_[accLen_++] = v;
   } else {
-    resync_++;       // oversize; drop and wait for the next flag
+    // Oversize: count one resync and drop this kMaxAcc-byte chunk; the
+    // remainder of the overlong run is re-accumulated as a fresh chunk
+    // (a long junk frame costs one resync per full chunk) until the next
+    // flag clears the accumulator.
+    resync_++;
     accLen_ = 0;
   }
 }
