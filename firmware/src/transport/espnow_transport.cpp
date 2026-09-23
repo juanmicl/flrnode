@@ -122,8 +122,8 @@ void EspNowTransport::onFrame(FrameCb cb, void* ctx) { cb_ = cb; ctx_ = ctx; }
 void EspNowTransport::pump() {
   // Single immediate retry, decided here (loop context) — never from the
   // WiFi callback (reentrancy risk; spec decision 10).
-  if (sendFailed_) {
-    sendFailed_ = false;
+  if (sendFailed_.load(std::memory_order_relaxed)) {
+    sendFailed_.store(false, std::memory_order_relaxed);
     if (!retried_) {
       retried_ = true;
       ++stats_.txRetry;
@@ -132,7 +132,9 @@ void EspNowTransport::pump() {
 #else
       esp_now_send(peer_, pending_, pendingLen_);
 #endif
-      return;  // result arrives via the callback again
+      // Result arrives via the callback again; the RX drain below is
+      // skipped for this one pump() call (harmless one-iteration delay).
+      return;
     }
     ++stats_.txFail;  // second failure: real loss for M1 acceptance
   }
@@ -156,6 +158,8 @@ void EspNowTransport::ringPushIsr(const uint8_t* d, uint16_t l, int16_t r) {
   ring_.push(d, l, r);
 }
 
-void EspNowTransport::notifySendFailedIsr() { sendFailed_ = true; }
+void EspNowTransport::notifySendFailedIsr() {
+  sendFailed_.store(true, std::memory_order_relaxed);
+}
 
 }  // namespace flr
