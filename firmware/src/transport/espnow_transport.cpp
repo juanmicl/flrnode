@@ -28,6 +28,12 @@ EspNowTransport* g_self = nullptr;  // platform C callbacks carry no ctx
 
 static bool parseMac(const char* hex, uint8_t out[6]) {
   if (strlen(hex) != 12) return false;
+  for (int i = 0; i < 12; ++i) {
+    const char c = hex[i];
+    const bool hexDigit = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') ||
+                          (c >= 'a' && c <= 'f');
+    if (!hexDigit) return false;  // leave out untouched (stays zero)
+  }
   for (int i = 0; i < 6; ++i) {
     char byte[3] = {hex[i * 2], hex[i * 2 + 1], 0};
     out[i] = (uint8_t)strtol(byte, nullptr, 16);
@@ -72,6 +78,9 @@ static void onSendCb(const uint8_t* /*mac*/, esp_now_send_status_t status) {
 
 bool EspNowTransport::begin() {
   g_self = this;
+  // A malformed FLR_PEER_MAC leaves peer_ zero (parse ignored on purpose):
+  // fail loud at boot beats a silent wrong MAC at the bench — the app
+  // lands in the idle-provisioning path via peerMacConfigured() == false.
   parseMac(FLR_PEER_MAC, peer_);
   WiFi.persistent(false);  // stored creds must not drag us off-channel
   WiFi.mode(WIFI_STA);

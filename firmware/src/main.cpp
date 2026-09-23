@@ -42,10 +42,15 @@ void setup() {
   }
   char own[13], peer[13];
   // WiFi.macAddress() returns "AA:BB:CC:DD:EE:FF"; parse it to bytes.
-  uint8_t ownMac[6];
-  sscanf(WiFi.macAddress().c_str(), "%2hhx:%2hhx:%2hhx:%2hhx:%2hhx:%2hhx",
-         &ownMac[0], &ownMac[1], &ownMac[2], &ownMac[3], &ownMac[4],
-         &ownMac[5]);
+  uint8_t ownMac[6] = {0};
+  // Garbage boot MAC would mislead provisioning; fail loud and idle.
+  if (sscanf(WiFi.macAddress().c_str(),
+             "%2hhx:%2hhx:%2hhx:%2hhx:%2hhx:%2hhx",
+             &ownMac[0], &ownMac[1], &ownMac[2], &ownMac[3], &ownMac[4],
+             &ownMac[5]) != 6) {
+    Serial.println(F("{\"t\":\"error\",\"init\":\"mac_parse\"}"));
+    while (true) { delay(1000); yield(); }  // halted idle; delay() allowed
+  }
   macHex(ownMac, own);
   macHex(transport.peerMac(), peer);
   char boot[160];
