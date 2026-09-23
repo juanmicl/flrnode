@@ -4,10 +4,16 @@
 namespace flr {
 
 bool RingBuffer::push(const uint8_t* data, uint16_t len, int16_t rssi) {
-  if (len > sizeof(RingFrame::data)) { overflow_++; return false; }
+  // overflow_ is producer-only (SPSC contract), so the increment is done
+  // as load+store: the lx106 toolchain has no libatomic for the RMW form.
+  const auto bumpOverflow_ = [this]() {
+    overflow_.store(overflow_.load(std::memory_order_relaxed) + 1,
+                    std::memory_order_relaxed);
+  };
+  if (len > sizeof(RingFrame::data)) { bumpOverflow_(); return false; }
   const size_t head = head_.load(std::memory_order_relaxed);
   const size_t next = (head + 1) % kSlots;
-  if (next == tail_.load(std::memory_order_acquire)) { overflow_++; return false; }
+  if (next == tail_.load(std::memory_order_acquire)) { bumpOverflow_(); return false; }
   RingFrame& f = buf_[head];
   memcpy(f.data, data, len);
   f.len = len;
