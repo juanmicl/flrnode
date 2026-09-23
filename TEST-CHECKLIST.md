@@ -20,19 +20,21 @@ to the PC for the whole run (USB powers them and gives us the logs).
    Write down A's MAC. Close the monitor (Ctrl+] or Ctrl+T then Ctrl+X).
 3. Unplug A. Plug board B. Flash the pinger:
    `pio run -e d1_mini_pinger -t upload`. Note B's MAC. Close monitor.
-4. Plug A back in (both boards now USB-connected). Rebuild each role
-   pointing at the OTHER board's MAC and reflash.
-   For A (ponger, pointing at B):
-   `export PLATFORMIO_BUILD_FLAGS='-DFLR_PEER_MAC="<B-MAC>"'`
-   (verified by the controller: PLATFORMIO_BUILD_FLAGS appends to the
-   env flags — the role define survives; no extra flags needed)
-   `pio run -e d1_mini_ponger -t upload`
-   For B (pinger, pointing at A):
-   `export PLATFORMIO_BUILD_FLAGS='-DFLR_PEER_MAC="<A-MAC>"'`
-   `pio run -e d1_mini_pinger -t upload`
-   Then `unset PLATFORMIO_BUILD_FLAGS`.
-   Use exactly 12 hex digits with no separators (AABBCCDDEEFF form); the
-   firmware's MAC parser does not accept AA:BB:CC:DD:EE:FF.
+4. Rebuild each role pointing at the OTHER board's MAC and reflash — ONE
+   BOARD AT A TIME so the upload port is never ambiguous (two identical
+   CH340 adapters make auto-detection a coin flip):
+   a. Unplug B, plug in A only. Flash A (ponger, pointing at B's MAC):
+      `export PLATFORMIO_BUILD_FLAGS='-DFLR_PEER_MAC="<B-MAC>"'`
+      `pio run -e d1_mini_ponger -t upload`
+      (verified by the controller: PLATFORMIO_BUILD_FLAGS appends to the
+      env flags — the role define survives; no extra flags needed)
+   b. Unplug A, plug in B only. Flash B (pinger, pointing at A's MAC):
+      `export PLATFORMIO_BUILD_FLAGS='-DFLR_PEER_MAC="<A-MAC>"'`
+      `pio run -e d1_mini_pinger -t upload`
+      `unset PLATFORMIO_BUILD_FLAGS`
+   c. Plug A back in: both boards connected, ready for Phase 2.
+   MACs are 12 hex digits, no separators (AABBCCDDEEFF) — exactly what the
+   boot line prints and what FLR_PEER_MAC expects.
 
 ## Phase 2: acceptance run (~3 min)
 
