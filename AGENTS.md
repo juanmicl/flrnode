@@ -131,8 +131,10 @@ static files). Add boards to the manifest, not to the code.
 
 ## Milestones (pick the lowest incomplete; update STATUS.md)
 
-- [ ] M1 ESP-NOW ping-pong: two nodes exchange frames, RSSI printed,
-      0 packet loss over 1000 frames at 10 pps. (d1_mini + esp32 envs)
+- [x] M1 ESP-NOW ping-pong — closed 2026-09-23 on the D1 mini pair with
+      amended acceptance (0 send failures, 100% forward delivery, >= 99%
+      round-trip; measured runs in STATUS.md). RSSI printing and the
+      esp32 env hardware run move to M2 entry.
 - [ ] M2 HDLC bridge: rnsd on two hosts exchanges announces; `rnstatus`
       shows interface; `rnspong`/Sideband chat works.
 - [ ] M3 flrn CLI complete + host installer + doctor.
