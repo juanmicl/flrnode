@@ -40,7 +40,7 @@ def hdlc_frame(inner_type: int, payload: bytes) -> bytes:
 
 class Deframer:
     def __init__(self):
-        self.frames = []   # (type, payload)
+        self.frames = []   # (type, payload) — gate harness: assert only on valid deliveries
         self._acc = bytearray()
         self._esc = False
     def feed(self, bs):

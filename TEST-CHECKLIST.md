@@ -17,8 +17,8 @@ closes only when gate 3 results are pasted into STATUS.md.
    `PLATFORMIO_BUILD_FLAGS='-DFLR_PEER_MAC=\"E8DB84DC63E1\"' pio run -e d1_mini_bridge -t upload`
 3. Plug A back in (both connected).
 4. Boot lines arrive at 921600 — watch with the gate 2 harness below
-   (a plain `pio device monitor` also works; escaped quotes in the
-   build flag are mandatory, see M1's checklist note).
+   (a plain `pio device monitor -b 921600` also works; escaped quotes
+   are mandatory — SCons strips bare quotes and the build breaks).
 
 ## Phase 2: gate 2 — bridge on the bench (no hosts)
 
@@ -44,6 +44,9 @@ closes only when gate 3 results are pasted into STATUS.md.
 ## Troubleshooting
 
 - No boot line: check 921600 (not 115200 — that was M1's ping-pong).
+- GATE2: FAIL with 0/9 frames: compare the "channel" and "peer" fields
+  in both boot lines; a wrong peer MAC means reflash Phase 1; mismatched
+  channel means stored-credential drift (power-cycle both and re-run).
 - rnstatus shows no interface: reticulum.conf `serial_port` by-id path
   wrong; check `ls /dev/serial/by-id/` on the Pi.
 - Announce bursts at bring-up are normal (TX backlog exists for them).

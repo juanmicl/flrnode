@@ -15,6 +15,7 @@ One-time provisioning per Pi (two boards: flrnode-1, flrnode-2).
     sudo usermod -aG dialout $USER   # log out/in after this
     sudo apt install -y python3-pip pipx
     pipx install rns
+    pipx ensurepath   # log out/in once more so rnsd is on $PATH
 
 ## Configure the SerialInterface
 
@@ -36,7 +37,6 @@ Foreground for the acceptance run:
 
 Optional systemd unit (documented, not required for M2):
 
-    pipx ensurepath
     ~/.local/bin/rnsd   # in tmux/screen, one per Pi
 
 ## Bring-up note

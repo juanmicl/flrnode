@@ -12,8 +12,9 @@ using ByteSink = void (*)(void*, const uint8_t*, size_t);
 // Serial HDLC <-> L2 <-> radio bridge (M2). Serial bytes in via
 // onSerialByte; framed serial bytes out via the injected sink, at most
 // 256 B per tick (remaining bytes park in a static output ring sized
-// for two worst-case wire frames — a full ring means the host stopped
-// draining; dropped bytes are counted in droppedOutputBytes()).
+// for one worst-case wire frame plus headroom — a full ring means the
+// host stopped draining; dropped bytes are counted in
+// droppedOutputBytes()).
 // CTRL is request/reply only; the bridge never originates unsolicited
 // wire frames (decision 1).
 class BridgeApp {

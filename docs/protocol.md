@@ -202,6 +202,8 @@ All exposed via CTRL (§8). Airtime (ms) counted at L1.
    oldest existing in-window slot has aged past T_slot_gc, rcv_cum
    advances past consecutively absent head slots (partial head slots are
    never skipped), after which contiguous completes deliver normally.
+   Aged complete slots are kept as the aging witness and deliver after
+   the skip; only aged partial slots are discarded.
    This bounds head-of-line stalls caused by sender-DROPPED frames: a
    permanent gap cannot wedge the window beyond T_slot_gc.
 

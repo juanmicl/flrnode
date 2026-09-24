@@ -2,7 +2,6 @@
 #include <stdio.h>
 
 #if defined(FLR_APP_BRIDGE)
-#include <stdio.h>
 #include "bridge_app.h"
 #include "led.h"
 #include "transport/espnow_transport.h"

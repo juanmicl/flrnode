@@ -40,9 +40,10 @@ size_t l2EncodeNak(const uint16_t* seqs, const uint8_t* masks, size_t entries,
                    uint8_t* out, size_t cap);
 
 // Decode one wire PDU; payload points INTO in on success.
-// Context: any. Blocking: O(1). Failure: false when len < 4, ver != 1,
-// ftype > 3, DATA-FRAG with cnt == 0 / idx >= cnt / seq == 0, ACK with
-// trailing bytes, or NAK payload not 3*k with k <= 4.
+// Context: any. Blocking: O(1). Failure: false when len < 4, ver != 1
+// (ftype > 3 is unreachable by construction — 2-bit field), DATA-FRAG
+// with cnt == 0 / idx >= cnt / seq == 0, ACK with trailing bytes, or
+// NAK payload not 3*k with k <= 4.
 bool l2Decode(const uint8_t* in, size_t len, L2Pdu* h,
               const uint8_t** payload, size_t* n);
 

@@ -39,6 +39,7 @@ void BridgeApp::handleCtrl_(const uint8_t* payload, size_t n) {
   char buf[64] = {0};
   const size_t c = n < sizeof(buf) - 1 ? n : sizeof(buf) - 1;
   memcpy(buf, payload, c);
+  // strict section-8 example format, no whitespace tolerance
   if (strstr(buf, "\"cmd\":\"stats\"") != nullptr) {
     const ArqStats& s = arq_.stats();
     char line[384];  // pinned 14-key stats schema; worst case < 384 B
@@ -64,7 +65,7 @@ void BridgeApp::handleCtrl_(const uint8_t* payload, size_t n) {
 
 void BridgeApp::emitFrame_(uint8_t innerType, const uint8_t* payload,
                            size_t n) {
-  uint8_t wire[1060];
+  uint8_t wire[1060];  // ~1.6 KB transient stack (wire + hdlcFrame body)
   const size_t w = hdlcFrame(innerType, payload, n, wire, sizeof(wire));
   if (w == 0) {
     oDropped_ += n;  // oversize for the wire (cannot happen via deframer)

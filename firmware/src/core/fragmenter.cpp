@@ -126,9 +126,10 @@ FragRx Reassembler::onFragment(uint16_t seq, uint8_t idx, uint8_t cnt,
   // Stale/window classification is baseline-gated and MODULAR (P-11: a
   // booting receiver accepts the first frame wherever its seq starts,
   // e.g. 65534 — signed-negative distance = wrap-ahead, accepted; a
-  // plainly-forward distance beyond the window overflows). After the
-  // baseline: behind (>= 32768 modular) = stale, ahead > window =
-  // overflow.
+  //   plainly-forward distance beyond the window overflows). After the
+  //   baseline: behind (>= 32768 modular) = stale, ahead > window =
+  //   overflow. Pre-baseline: only plainly-forward overflow rejects; the
+  //   first completion baselines anywhere.
   const uint16_t relRaw = (uint16_t)(seq - rcvCum_);
   const int16_t srel = (int16_t)relRaw;
   if (haveBase_) {
