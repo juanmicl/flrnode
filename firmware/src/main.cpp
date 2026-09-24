@@ -2,14 +2,72 @@
 #include <stdio.h>
 
 #if defined(FLR_APP_BRIDGE)
-// M2 bridge wiring lands in Task 10; placeholder keeps the matrix real.
-static void bridgeSetup() {
-  Serial.begin(921600);
-  Serial.println(F("{\"t\":\"boot\",\"fw\":\"m2\",\"mode\":\"bridge\",\"placeholder\":true}"));
+#include <stdio.h>
+#include "bridge_app.h"
+#include "led.h"
+#include "transport/espnow_transport.h"
+
+#ifdef ESP8266
+#include <ESP8266WiFi.h>
+#elif defined(ESP32)
+#include <WiFi.h>
+#endif
+
+#ifndef FLR_CHANNEL
+#define FLR_CHANNEL 1
+#endif
+
+static void serialBytesSink(void* /*ctx*/, const uint8_t* d, size_t n) {
+  Serial.write(d, n);  // <= 256 B per tick; ~2.8 ms at 921600, in budget
 }
-static void bridgeLoop() { yield(); }
-void setup() { bridgeSetup(); }
-void loop() { bridgeLoop(); }
+
+static flr::EspNowTransport transport;
+static flr::BridgeApp s_bridge(transport, nullptr, serialBytesSink);
+
+static void macHex(const uint8_t mac[6], char* out /*>=13*/) {
+  snprintf(out, 13, "%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2],
+           mac[3], mac[4], mac[5]);
+}
+
+void setup() {
+  Serial.begin(921600);  // AGENTS.md SerialInterface rule
+  ledInit();
+  if (!transport.begin()) {
+    Serial.println(F("{\"t\":\"error\",\"init\":\"esp_now\"}"));
+    while (true) ledSosStep();  // halted error loop; delay() allowed here
+  }
+  uint8_t ownMac[6] = {0};
+  if (sscanf(WiFi.macAddress().c_str(),
+             "%2hhx:%2hhx:%2hhx:%2hhx:%2hhx:%2hhx", &ownMac[0], &ownMac[1],
+             &ownMac[2], &ownMac[3], &ownMac[4], &ownMac[5]) != 6) {
+    Serial.println(F("{\"t\":\"error\",\"init\":\"mac_parse\"}"));
+    while (true) { delay(1000); yield(); }
+  }
+  char own[13], peer[13];
+  macHex(ownMac, own);
+  macHex(transport.peerMac(), peer);
+  char boot[160];
+  snprintf(boot, sizeof(boot),
+           "{\"t\":\"boot\",\"fw\":\"m2\",\"mode\":\"bridge\",\"channel\":%d,"
+           "\"mac\":\"%s\",\"peer\":\"%s\",\"warn\":\"dev keys\"}",
+           FLR_CHANNEL, own,
+           transport.peerMacConfigured() ? peer : "UNSET-read-mac-above");
+  Serial.println(boot);
+  if (!transport.peerMacConfigured()) {
+    Serial.println(F("{\"t\":\"idle\",\"reason\":\"no peer mac\"}"));
+    while (true) { delay(1000); yield(); }  // halted provisioning idle
+  }
+  s_bridge.begin(millis());
+}
+
+void loop() {
+  const uint32_t now = millis();
+  while (Serial.available()) s_bridge.onSerialByte((uint8_t)Serial.read(), now);
+  transport.pump();
+  s_bridge.tick(now);
+  yield();  // ESP8266 watchdog
+}
+
 #elif defined(FLR_ROLE_PINGER) || defined(FLR_ROLE_PONGER)
 #include "core/stats.h"
 #include "led.h"
