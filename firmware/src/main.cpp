@@ -1,5 +1,16 @@
 #include <Arduino.h>
 #include <stdio.h>
+
+#if defined(FLR_APP_BRIDGE)
+// M2 bridge wiring lands in Task 10; placeholder keeps the matrix real.
+static void bridgeSetup() {
+  Serial.begin(921600);
+  Serial.println(F("{\"t\":\"boot\",\"fw\":\"m2\",\"mode\":\"bridge\",\"placeholder\":true}"));
+}
+static void bridgeLoop() { yield(); }
+void setup() { bridgeSetup(); }
+void loop() { bridgeLoop(); }
+#elif defined(FLR_ROLE_PINGER) || defined(FLR_ROLE_PONGER)
 #include "core/stats.h"
 #include "led.h"
 #include "ping_app.h"
@@ -88,3 +99,6 @@ void loop() {
 #endif
   yield();  // ESP8266 watchdog
 }
+#else
+#error "Define FLR_APP_BRIDGE or FLR_ROLE_PINGER/FLR_ROLE_PONGER"
+#endif

@@ -1,6 +1,4 @@
-// Placeholder translation unit so the `native` env has a buildable host
-// program until real core sources and Unity tests land (see Tasks 2+).
-// The main() is weak: the Unity test runner's main overrides it once tests
-// exist, so `pio run` and `pio test -e native` both work. Delete this file
-// when core sources provide real content.
+// Stub main so `pio run -e native` links (no real main in src for native
+// builds). Load-bearing since M1; keep until a src source provides a real
+// main.
 __attribute__((weak)) int main() { return 0; }
