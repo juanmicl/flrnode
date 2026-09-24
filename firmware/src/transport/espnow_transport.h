@@ -47,7 +47,7 @@ class EspNowTransport : public Transport {
   // Blocking: never. Used by the bridge app to give the failure to
   // the ARQ layer as retry #1 (protocol.md 7.1). Ping-pong builds
   // never call this; their pump() retry consumes the flag itself.
-  bool takeSendFailed();
+  bool takeSendFailed() override;
 
  private:
   RingBuffer ring_;

@@ -35,6 +35,9 @@ class Transport {
   // Cumulative counters since construction/reset.
   // Context: any. Blocking: never. Failure: none.
   virtual const TransportStats& stats() const = 0;
+  // Bridge-mode hook: returns-and-clears a pending send failure.
+  // Default: none (mocks/tests). Context: loop. Blocking: never.
+  virtual bool takeSendFailed() { return false; }
 };
 
 }  // namespace flr
