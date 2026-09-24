@@ -1,84 +1,55 @@
-# TEST-CHECKLIST: M1 acceptance (D1 mini pair)
+# TEST-CHECKLIST: M2 acceptance (bridge + Reticulum)
 
-The human runs this and pastes results into STATUS.md. Time: ~20 min.
-Boards: two WEMOS D1 mini (label them A and B). Both stay USB-connected
-to the PC for the whole run (USB powers them and gives us the logs).
+Gates run bench-first (no hosts), then end-to-end with the Pis. M2
+closes only when gate 3 results are pasted into STATUS.md.
 
-## One-time setup
+## Phase 0: prerequisites
 
-1. `pipx install platformio` (or `pip install --user platformio`).
-2. Serial permissions: `sudo usermod -aG dialout $USER`, then log out
-   and back in.
-3. `chmod +x scripts/bench_monitor.sh`.
+- The M1 boards, still labeled A and B, MACs A=E8DB84DC63E1,
+  B=E8DB84DC658C (provisioned in M1; unchanged).
+- `pio` on the bench PC + dialout (M1 one-time setup, already done).
 
-## Phase 1: provision peer MACs (~10 min, once)
+## Phase 1: flash bridge firmware (one board at a time)
 
-1. Plug board A, flash the ponger:
-   `cd firmware && pio run -e d1_mini_ponger -t upload`
-2. Open the monitor: `pio device monitor -b 115200`. The boot line shows
-   `"mac":"XXXXXXXXXXXX"` and `"peer":"UNSET-read-mac-above"`.
-   Write down A's MAC. Close the monitor (Ctrl+] or Ctrl+T then Ctrl+X).
-3. Unplug A. Plug board B. Flash the pinger:
-   `pio run -e d1_mini_pinger -t upload`. Note B's MAC. Close monitor.
-4. Rebuild each role pointing at the OTHER board's MAC and reflash — ONE
-   BOARD AT A TIME so the upload port is never ambiguous (two identical
-   CH340 adapters make auto-detection a coin flip):
-   a. Unplug B, plug in A only. Flash A (ponger, pointing at B's MAC):
-      `export PLATFORMIO_BUILD_FLAGS='-DFLR_PEER_MAC=\"<B-MAC>\"'`
-      `pio run -e d1_mini_ponger -t upload`
-      (bench-verified: PLATFORMIO_BUILD_FLAGS appends to the env flags and
-      the role define survives; the inner quotes MUST be escaped as \" —
-      SCons strips bare quotes and a real MAC breaks the build)
-   b. Unplug A, plug in B only. Flash B (pinger, pointing at A's MAC):
-      `export PLATFORMIO_BUILD_FLAGS='-DFLR_PEER_MAC=\"<A-MAC>\"'`
-      `pio run -e d1_mini_pinger -t upload`
-      `unset PLATFORMIO_BUILD_FLAGS`
-   c. Plug A back in: both boards connected, ready for Phase 2.
-   MACs are 12 hex digits, no separators (AABBCCDDEEFF) — exactly what the
-   boot line prints and what FLR_PEER_MAC expects.
+1. Plug A only:
+   `PLATFORMIO_BUILD_FLAGS='-DFLR_PEER_MAC=\"E8DB84DC658C\"' pio run -e d1_mini_bridge -t upload`
+2. Unplug A. Plug B only:
+   `PLATFORMIO_BUILD_FLAGS='-DFLR_PEER_MAC=\"E8DB84DC63E1\"' pio run -e d1_mini_bridge -t upload`
+3. Plug A back in (both connected).
+4. Boot lines arrive at 921600 — watch with the gate 2 harness below
+   (a plain `pio device monitor` also works; escaped quotes in the
+   build flag are mandatory, see M1's checklist note).
 
-## Phase 2: acceptance run (~3 min)
+## Phase 2: gate 2 — bridge on the bench (no hosts)
 
-1. Place both boards 1-3 m apart on the desk, antennas vertical if
-   external, orientation noted.
-2. From the repo root: `scripts/bench_monitor.sh /dev/ttyUSB0 /dev/ttyUSB1`
-   (ponger port first; see note). The script prefixes every line with
-   [PONGER]/[PINGER] and tees to logs/. If the port names are swapped,
-   pass them in the right order — the script does not auto-detect.
-   NOTE: opening a serial port asserts DTR and RESETS a D1 mini, so the
-   ponger resets first and the pinger second: the required power-on
-   order happens automatically. Watch for both boot lines. Each board
-   prints two boot lines (setup's rich line, then the app's role line) —
-   both are normal.
-3. Wait ~110 s. The pinger prints:
-   `{"t":"m1_result",...,"verdict":"PASS"}` (or FAIL).
-   The ponger prints `{"t":"pong_final",...}` a few seconds later.
-4. Cross-check: ponger `"rx"` == pinger `"rx"` == 1000, and
-   `"loss":0` for PASS. If FAIL, keep both logs and see below.
+1. `~/.local/share/pipx/venvs/platformio/bin/python scripts/bridge_gate2.py /dev/ttyUSB0 /dev/ttyUSB1`
+2. Expect `GATE2: PASS`: 9 frames A->B in order, 3 frames B->A, and
+   both bridges' stats counters printed (ack/nak/retry activity under
+   air loss is expected and is the point).
+3. Paste the full output into STATUS.md.
 
-## Phase 3: record results
+## Phase 3: gate 3 — Reticulum end to end (AGENTS wording)
 
-Paste into STATUS.md (session log):
-- pinger m1_result line + ponger pong_final line
-- distance (m), antenna (stock PCB / external), orientation, channel,
-  TX power (17.5 dBm, firmware-pinned; note antenna gain -> EIRP),
-  date, board names A/B, and the full logs/ paths if anything failed.
+1. Provision both Pis per docs/host-setup.md.
+2. Move each D1 mini from the PC to its Pi.
+3. `rnsd -v` on both (tmux/screen fine).
+4. `rnstatus` on either Pi: the SerialInterface must be up; announces
+   from both nodes must cross.
+5. `rnspong`: announce a destination on Pi 1, send a message from
+   Pi 2, receive the reply (round trip through the radio).
+6. Optional evidence: pull `{"cmd":"stats"}` from a bridge via its Pi
+   (any pyserial one-liner at 921600) and paste it too.
+7. Paste results into STATUS.md.
 
 ## Troubleshooting
 
-- No `m1_result` after ~2 min: the pinger has no stall guard by design;
-  power-cycle both boards and re-run — if it recurs, keep logs (it
-  indicates `send()` failing persistently, e.g. radio wedged or peer
-  entry wrong).
-- Loss of 1-3 frames only in the first second = boot race; just re-run.
-- rx == 0 on both: compare `"channel"` in both boot lines; check that
-  each peer MAC equals the OTHER board's actual mac; re-flash if unsure.
-- Occasional loss on a busy desk: re-run with a phone WiFi analyzer to
-  pick a quieter channel, rebuild both with
-  `-DFLR_CHANNEL=<n>` in PLATFORMIO_BUILD_FLAGS.
-- Permission denied opening ports: dialout group (see one-time setup).
+- No boot line: check 921600 (not 115200 — that was M1's ping-pong).
+- rnstatus shows no interface: reticulum.conf `serial_port` by-id path
+  wrong; check `ls /dev/serial/by-id/` on the Pi.
+- Announce bursts at bring-up are normal (TX backlog exists for them).
+- USB cables at 921600: short and good quality.
 
 ## Verdict rule
 
-M1 passes only with `"verdict":"PASS"` from a real hardware run recorded
-in STATUS.md (AGENTS.md hard rule: no simulated hardware results).
+M2 passes only with gate 2 PASS recorded plus gate 3 results pasted by
+the human into STATUS.md (AGENTS hard rule: no simulated results).

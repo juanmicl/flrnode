@@ -6,7 +6,7 @@ Living state. Update after each session (AGENTS.md).
 
 - [x] M1 ESP-NOW ping-pong — CLOSED 2026-09-23, amended acceptance (see
       hardware results below)
-- [ ] M2 HDLC bridge to rnsd
+- [ ] M2 HDLC bridge (code complete; awaiting gates 2-3)
 - [ ] M3 flrn CLI + host installer
 - [ ] M4 FLRC transport + benchmarks
 - [ ] M5 Web flasher + launch
@@ -70,3 +70,7 @@ Bench findings fixed during the session:
   Bench-found and fixed: missing esp_now_set_self_role (esp_now_send -3),
   build-flag quoting. Three acceptance runs recorded above; M1 closed
   with the owner-approved amended acceptance.
+- 2026-09-24 (M2 build): full L2 per protocol.md (pdu codec, fragmenter,
+  ARQ window/backlog/NAK) + bridge app + host artifacts implemented via
+  the 12-task reviewed plan. Native suite 68/68 in 10 suites, six embedded
+  envs green. Awaiting TEST-CHECKLIST gates 2 and 3.
