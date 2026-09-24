@@ -190,7 +190,15 @@ void EspNowTransport::notifySendFailedIsr() {
 }
 
 bool EspNowTransport::takeSendFailed() {
-  return sendFailed_.exchange(false, std::memory_order_relaxed);
+  // lx106 gcc emits __atomic_exchange_1 for exchange() and the ESP8266
+  // toolchain ships no libatomic to satisfy it; use the same relaxed
+  // load/store pair pump() already uses. Single consumer (loop task),
+  // single producer (WiFi task), one-core ESP8266.
+  if (sendFailed_.load(std::memory_order_relaxed)) {
+    sendFailed_.store(false, std::memory_order_relaxed);
+    return true;
+  }
+  return false;
 }
 
 }  // namespace flr
