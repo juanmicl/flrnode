@@ -139,6 +139,11 @@ bool EspNowTransport::send(const uint8_t* data, size_t len) {
 void EspNowTransport::onFrame(FrameCb cb, void* ctx) { cb_ = cb; ctx_ = ctx; }
 
 void EspNowTransport::pump() {
+#if !defined(FLR_APP_BRIDGE)
+  // Ping-pong builds: autonomous single retry from loop context (M1
+  // behavior). Bridge builds skip this entirely: the flag is consumed
+  // by ArqSession::onTransportSendFailed as retry #1 per 7.1, and the
+  // ARQ counters — not txFail — carry the story.
   // Single immediate retry, decided here (loop context) — never from the
   // WiFi callback (reentrancy risk; loop-context retry by design).
   if (sendFailed_.load(std::memory_order_relaxed)) {
@@ -157,6 +162,9 @@ void EspNowTransport::pump() {
     }
     ++stats_.txFail;  // second failure: real loss for M1 acceptance
   }
+#else
+  // FLR_APP_BRIDGE: ARQ owns retransmission (section 7.1).
+#endif
   RingFrame f;
   while (ring_.pop(&f)) {
     ++stats_.rx;
@@ -179,6 +187,10 @@ void EspNowTransport::ringPushIsr(const uint8_t* d, uint16_t l, int16_t r) {
 
 void EspNowTransport::notifySendFailedIsr() {
   sendFailed_.store(true, std::memory_order_relaxed);
+}
+
+bool EspNowTransport::takeSendFailed() {
+  return sendFailed_.exchange(false, std::memory_order_relaxed);
 }
 
 }  // namespace flr

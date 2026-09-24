@@ -43,6 +43,11 @@ class EspNowTransport : public Transport {
   // access; platform callbacks carry no user pointer). Minimal work only.
   void ringPushIsr(const uint8_t* d, uint16_t l, int16_t r);
   void notifySendFailedIsr();
+  // Returns-and-clears the send-failure flag. Context: loop (tick).
+  // Blocking: never. Used by the bridge app to give the failure to
+  // the ARQ layer as retry #1 (protocol.md 7.1). Ping-pong builds
+  // never call this; their pump() retry consumes the flag itself.
+  bool takeSendFailed();
 
  private:
   RingBuffer ring_;
