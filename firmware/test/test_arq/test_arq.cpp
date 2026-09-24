@@ -148,6 +148,67 @@ static void test_transport_failure_oldest_retry1() {
   TEST_ASSERT_EQUAL_UINT32(1, s.stats().txRetries);
 }
 
+
+static void test_nak_retransmit_lost_recovers() {
+  MockTransport a, b; RadioCapture cap; flr::ArqSession s;
+  sessionSetup(a, b, cap, s);
+  static uint8_t f[300];                        // 2 fragments of 246
+  TEST_ASSERT_TRUE(s.tx(f, 300, 0));            // seq 1, frags 0..1
+  b.pump();
+  const uint16_t seqs[1] = {1};
+  const uint8_t masks[1] = {0x02};
+  uint8_t nak[16];
+  const size_t n = flr::l2EncodeNak(seqs, masks, 1, nak, sizeof(nak));
+  s.onPdu(nak, n, 5);                            // retransmit #1 (covered)
+  b.pump();
+  s.onPdu(nak, n, 10);                           // #1 lost on air: the peer
+  b.pump();                                      // NAKs again -> fires again
+  TEST_ASSERT_EQUAL_UINT32(2, peerDataCount(cap, 1, 1, true));
+}
+
+static void test_covered_ladder_expiry() {
+  MockTransport a, b; RadioCapture cap; flr::ArqSession s;
+  sessionSetup(a, b, cap, s);
+  uint8_t f[4] = {0, 0, 0, 0};
+  TEST_ASSERT_TRUE(s.tx(f, 4, 0));               // seq 1
+  b.pump();
+  const uint16_t seqs[1] = {1};
+  const uint8_t masks[1] = {0x01};
+  uint8_t nak[16];
+  const size_t n = flr::l2EncodeNak(seqs, masks, 1, nak, sizeof(nak));
+  s.onPdu(nak, n, 5);                            // retransmit #1, covered
+  b.pump();
+  TEST_ASSERT_EQUAL_UINT32(1, peerDataCount(cap, 1, 0, true));
+  s.tick(505);                                   // covered skip expires
+  b.pump();
+  TEST_ASSERT_EQUAL_UINT32(2, peerDataCount(cap, 1, 0, true));
+  for (int i = 0; i < 3; ++i) {                  // ladder to exhaustion
+    s.tick(505 + 500 * (i + 1));
+    b.pump();
+  }
+  TEST_ASSERT_EQUAL_UINT32(5, peerDataCount(cap, 1, 0, true));
+  s.tick(505 + 500 * 4 + 1000);                  // retries exhausted
+  TEST_ASSERT_EQUAL_UINT32(1, s.stats().txDropped);
+}
+
+static void test_stale_is_silent() {
+  MockTransport a, b; RadioCapture cap; flr::ArqSession s;
+  sessionSetup(a, b, cap, s);
+  uint8_t f[4] = {0, 0, 0, 0};
+  flr::L2Pdu h{};
+  h.ftype = flr::L2_DATA_FRAG; h.seq = 1; h.fragIdx = 0; h.fragCnt = 1;
+  uint8_t pdu[8];
+  const size_t pn = flr::l2Encode(h, f, 4, pdu, sizeof(pdu));
+  s.onPdu(pdu, pn, 10);                          // completes: rcvCum = 1
+  const uint32_t acksBefore = s.stats().ackSent;
+  const uint32_t dupsBefore = s.stats().rxDups;
+  const uint32_t staleBefore = s.stats().rxStale;
+  s.onPdu(pdu, pn, 20);                          // same seq again: STALE
+  TEST_ASSERT_EQUAL_UINT32(acksBefore, s.stats().ackSent);   // silent
+  TEST_ASSERT_EQUAL_UINT32(dupsBefore, s.stats().rxDups);
+  TEST_ASSERT_EQUAL_UINT32(staleBefore + 1, s.stats().rxStale);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_tx_single_frame_on_air);
@@ -157,5 +218,8 @@ int main() {
   RUN_TEST(test_ack_retires_frames);
   RUN_TEST(test_nak_immediate_retransmit_with_retry_flag);
   RUN_TEST(test_transport_failure_oldest_retry1);
+  RUN_TEST(test_nak_retransmit_lost_recovers);
+  RUN_TEST(test_covered_ladder_expiry);
+  RUN_TEST(test_stale_is_silent);
   return UNITY_END();
 }

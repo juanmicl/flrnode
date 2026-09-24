@@ -18,7 +18,6 @@ void ArqSession::begin(Transport* t, uint32_t nowMs, uint16_t seedSeq) {
   stats_ = ArqStats{};
   for (auto& f : win_) f.seq = 0;
   reasm_.begin(&ArqSession::reasmDeliver_, this);
-  nowMs_ = nowMs;
 }
 void ArqSession::begin(Transport* t, uint32_t nowMs) { begin(t, nowMs, 0); }
 
@@ -143,7 +142,6 @@ void ArqSession::onPdu(const uint8_t* raw, size_t len, uint32_t nowMs) {
   const uint8_t* pl;
   size_t pn;
   if (!l2Decode(raw, len, &h, &pl, &pn)) return;
-  nowMs_ = nowMs;
   if (h.ftype == L2_ACK) {
     retireAcked_(h.seq, (uint8_t)((h.fragIdx << 4) | h.fragCnt));
     return;
@@ -155,7 +153,9 @@ void ArqSession::onPdu(const uint8_t* raw, size_t len, uint32_t nowMs) {
       TxFrame* f = findBySeq_(seq);
       if (f == nullptr) continue;
       for (uint8_t j = 0; j < 15 && j < f->cnt; ++j) {
-        if ((mask & (1u << j)) && !(f->covered & (1u << j))) {
+        if (mask & (1u << j)) {
+          // NAK retransmits REGARDLESS of covered (amended 5.1): the
+          // listed fragment may have gone missing after being covered.
           if (retransmit_(*f, j, nowMs)) f->covered |= (1u << j);
           else return;  // frame dropped mid-NAK
         }
@@ -170,13 +170,15 @@ void ArqSession::onPdu(const uint8_t* raw, size_t len, uint32_t nowMs) {
                                        pn, nowMs);
     switch (r) {
       case FragRx::STALE:
-        ++stats_.rxStale;
+        ++stats_.rxStale;                // silent drop (P-07): no re-ACK
+        return;
+      case FragRx::ACCEPTED_DUP:
         ++stats_.rxDups;                 // idempotent re-ACK trigger (5.2)
-        emitAck_(nowMs);
+        emitAck_();
         return;
       case FragRx::OVERFLOW:
         ++stats_.rxWindowOverflow;
-        emitNak_(RxReport{}, nowMs);     // empty NAK: receiver is ahead
+        emitNak_(RxReport{});            // empty NAK: receiver is ahead
         return;
       case FragRx::META_CONFLICT:
         ++stats_.metaConflict;
@@ -184,24 +186,30 @@ void ArqSession::onPdu(const uint8_t* raw, size_t len, uint32_t nowMs) {
       case FragRx::ACCEPTED:
         break;
     }
-    if (reasm_.rcvCum() != before) emitAck_(nowMs);  // completeness (5.2)
+    if (reasm_.rcvCum() != before) emitAck_();  // completeness (5.2)
     const RxReport rep = reasm_.report();
-    if (rep.nakCount > 0) emitNak_(rep, nowMs);
+    if (rep.nakCount > 0) emitNak_(rep);
     return;
   }
   // L2_CTRL: decodes, no M2 handler — drop silently.
 }
 
 void ArqSession::tick(uint32_t nowMs) {
-  nowMs_ = nowMs;
   reasm_.tick(nowMs);
   for (auto& f : win_) {
     if (f.seq == 0) continue;
     for (uint8_t i = 0; i < f.cnt; ++i) {
-      if (f.covered & (1u << i)) continue;   // accounted; await feedback
-      if (f.retries[i] >= kMaxRetries) { dropFrame_(f); break; }
       uint32_t tmo = kRetryBaseMs << f.retries[i];
       if (tmo > kRetryCapMs) tmo = kRetryCapMs;
+      if (f.covered & (1u << i)) {
+        // Covered = ONE ladder skip (amended 5.1): once the fragment's
+        // own ladder boundary passes, the bit clears and it rejoins the
+        // normal ladder — every fragment stays reachable until
+        // MAX_RETRIES.
+        if (nowMs - f.lastSendMs[i] < tmo) continue;
+        f.covered &= (uint8_t)~(1u << i);
+      }
+      if (f.retries[i] >= kMaxRetries) { dropFrame_(f); break; }
       if (nowMs - f.lastSendMs[i] >= tmo) retransmit_(f, i, nowMs);
       if (f.seq == 0) break;                  // dropped inside retransmit_
     }
@@ -229,21 +237,19 @@ void ArqSession::onTransportSendFailed(uint32_t nowMs) {
   }
 }
 
-void ArqSession::emitAck_(uint32_t nowMs) {
+void ArqSession::emitAck_() {
   const RxReport rep = reasm_.report();
   uint8_t wire[4];
   const size_t n = l2EncodeAck(reasm_.rcvCum(), rep.ackBitmap, wire,
                                sizeof(wire));
   if (n && t_->send(wire, n)) ++stats_.ackSent;
-  (void)nowMs;
 }
 
-void ArqSession::emitNak_(const RxReport& rep, uint32_t nowMs) {
+void ArqSession::emitNak_(const RxReport& rep) {
   uint8_t wire[16];
   const size_t n = l2EncodeNak(rep.nakSeqs, rep.nakMasks, rep.nakCount,
                                wire, sizeof(wire));
   if (n && t_->send(wire, n)) ++stats_.nakSent;
-  (void)nowMs;
 }
 
 }  // namespace flr

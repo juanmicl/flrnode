@@ -71,8 +71,8 @@ class ArqSession {
   void dropFrame_(TxFrame& f);
   void retireAcked_(uint16_t cumSeq, uint8_t bitmap);
   void promoteBacklog_(uint32_t nowMs);
-  void emitAck_(uint32_t nowMs);
-  void emitNak_(const RxReport& rep, uint32_t nowMs);
+  void emitAck_();
+  void emitNak_(const RxReport& rep);
   static void reasmDeliver_(void* ctx, const uint8_t* d, size_t n);
 
   Transport* t_ = nullptr;
@@ -82,7 +82,6 @@ class ArqSession {
   size_t backlogHead_ = 0, backlogCount_ = 0;
   uint16_t nextSeq_ = 0;
   uint32_t allocCounter_ = 0;
-  uint32_t nowMs_ = 0;
   Reassembler reasm_;
   DeliverCb dcb_ = nullptr;
   void* dctx_ = nullptr;

@@ -25,8 +25,32 @@ void Reassembler::begin(Deliver d, void* ctx) {
   for (auto& s : slots_) s.cnt = 0;
 }
 void Reassembler::tick(uint32_t nowMs) {
-  for (auto& s : slots_)
-    if (s.cnt != 0 && nowMs - s.lastTouchMs > kSlotGcMs) s.cnt = 0;
+  // GC: aged PARTIAL slots are discarded. Aged COMPLETE slots are kept —
+  // delivering a complete frame is always correct, and GC-advance needs
+  // them as the aging witness for the skip below.
+  for (auto& s : slots_) {
+    if (s.cnt == 0 || nowMs - s.lastTouchMs <= kSlotGcMs) continue;
+    const uint16_t all = (uint16_t)((1u << s.cnt) - 1);
+    if (s.recvBits != all) s.cnt = 0;  // partial → discard
+  }
+  // GC-advance (section 6.5 amendment): while the head-of-window slot
+  // (rcvCum+1) is ABSENT and the oldest existing slot has aged past
+  // T_slot_gc, advance rcvCum past it. Partial heads are never skipped;
+  // a present head stops the advance (tryAdvance_ below then delivers
+  // contiguous completes). Boot guard: with no slots there is nothing
+  // aged, so rcvCum never advances prematurely.
+  for (;;) {
+    if (findSlot_((uint16_t)(rcvCum_ + 1)) != nullptr) break;
+    bool any = false;
+    uint32_t oldest = 0;
+    for (auto& s : slots_) {
+      if (s.cnt == 0) continue;
+      if (!any || s.lastTouchMs < oldest) { oldest = s.lastTouchMs; any = true; }
+    }
+    if (!any || nowMs - oldest <= kSlotGcMs) break;
+    ++rcvCum_;
+  }
+  tryAdvance_();
 }
 
 Reassembler::Slot* Reassembler::findSlot_(uint16_t seq) {
@@ -105,6 +129,8 @@ FragRx Reassembler::onFragment(uint16_t seq, uint8_t idx, uint8_t cnt,
     s = allocSlot_(seq, nowMs);
     s->cnt = cnt;
   }
+  const uint16_t bit = (uint16_t)(1u << idx);
+  if (s->recvBits & bit) return FragRx::ACCEPTED_DUP;  // idempotent merge
   s->lastTouchMs = nowMs;
 
   // Placement: non-last fragments are full and define fragSize; the

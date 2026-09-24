@@ -19,7 +19,7 @@ uint8_t fragSplit(const uint8_t* frame, size_t len, FragSink sink, void* ctx,
 
 // ---- RX half (added by M2 Task 4) ----
 
-enum class FragRx { STALE, ACCEPTED, OVERFLOW, META_CONFLICT };
+enum class FragRx { STALE, ACCEPTED, OVERFLOW, META_CONFLICT, ACCEPTED_DUP };
 
 // One coherent post-RX readout for ACK bitmap + NAK list. The
 // reassembler never transmits; the owning ArqSession interrogates it
