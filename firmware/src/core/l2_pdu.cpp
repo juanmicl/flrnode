@@ -10,6 +10,7 @@ static uint8_t makeB0(uint8_t ver, uint8_t ftype, uint8_t flags) {
 size_t l2Encode(const L2Pdu& h, const uint8_t* payload, size_t n,
                 uint8_t* out, size_t cap) {
   if (h.ftype != L2_DATA_FRAG) return 0;
+  if (h.ver != L2_VER) return 0;  // encoder symmetric with l2Decode
   if (h.fragCnt == 0 || h.fragCnt > 15 || h.fragIdx >= h.fragCnt) return 0;
   if (h.seq == L2_SEQ_SENTINEL) return 0;
   if (n + 4 > cap) return 0;

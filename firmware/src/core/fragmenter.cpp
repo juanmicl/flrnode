@@ -9,8 +9,11 @@ uint8_t fragSplit(const uint8_t* frame, size_t len, FragSink sink, void* ctx,
   if (frame == nullptr || sink == nullptr) return 0;
   if (len == 0 || len > L3_MAX) return 0;
   if (mtuPayload == 0) return 0;
-  const uint8_t cnt = (uint8_t)((len + mtuPayload - 1) / mtuPayload);
-  if (cnt > 15) return 0;
+  // Overflow-free ceil: len + mtuPayload - 1 could wrap size_t for a
+  // large caller-supplied mtuPayload; divide-then-add cannot.
+  const size_t cntSz = len / mtuPayload + (len % mtuPayload ? 1 : 0);
+  if (cntSz > 15) return 0;
+  const uint8_t cnt = (uint8_t)cntSz;
   for (uint8_t i = 0; i < cnt; ++i) {
     const size_t off = (size_t)i * mtuPayload;
     const size_t n = (off + mtuPayload > len) ? (len - off) : mtuPayload;
@@ -38,9 +41,11 @@ void Reassembler::tick(uint32_t nowMs) {
   // ABSENT and the oldest existing slot has aged past T_slot_gc, advance
   // rcvCum past it (MODULAR, sentinel-skipping). Partial heads are never
   // skipped; a present head stops the advance; tryAdvance_ below then
-  // delivers contiguous completes. Boot guard: with no slots there is
-  // nothing aged, so rcvCum never advances prematurely.
+  // delivers contiguous completes. Baseline guard: before the first
+  // delivery (haveBase_ false) the advance never runs — a restarted
+  // sender's early seqs must not desync rcvCum.
   for (;;) {
+    if (!haveBase_) break;
     uint16_t head = (uint16_t)(rcvCum_ + 1);
     if (head == L2_SEQ_SENTINEL) head = 1;  // sentinel skip
     if (findSlot_(head) != nullptr) break;
