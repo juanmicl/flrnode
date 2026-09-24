@@ -25,10 +25,7 @@ enum class FragRx { STALE, ACCEPTED, OVERFLOW, META_CONFLICT };
 // reassembler never transmits; the owning ArqSession interrogates it
 // once per received fragment and emits ACK/NAK itself.
 struct RxReport {
-  uint8_t ackBitmap;   // bit (7-i): seq base+i fully reassembled, where
-                       // base = rcvCum once baseline exists (bit 7 =
-                       // rcvCum itself, complete by definition), else
-                       // rcvCum+1
+  uint8_t ackBitmap;   // bit (7-i): seq rcvCum+1+i fully reassembled
   uint16_t nakSeqs[4]; // lowest-seq-first, up to 4 entries
   uint8_t nakMasks[4]; // bit j: fragment j of that seq missing
   size_t nakCount;     // 0..4
@@ -64,9 +61,6 @@ class Reassembler {
     uint16_t fragSize = 0;    // learned from any non-last fragment
     uint16_t lastLen = 0;
     uint32_t lastTouchMs = 0;
-    bool tailSeen = false;    // tail arrived before fragSize known:
-                              // excluded from NAK mask, NOT counted
-                              // towards completeness
     uint8_t buf[L3_MAX];
   };
   Slot* findSlot_(uint16_t seq);

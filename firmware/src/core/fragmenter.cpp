@@ -24,7 +24,6 @@ void Reassembler::begin(Deliver d, void* ctx) {
   deliver_ = d; dctx_ = ctx; rcvCum_ = 0; haveBase_ = false;
   for (auto& s : slots_) s.cnt = 0;
 }
-
 void Reassembler::tick(uint32_t nowMs) {
   for (auto& s : slots_)
     if (s.cnt != 0 && nowMs - s.lastTouchMs > kSlotGcMs) s.cnt = 0;
@@ -40,7 +39,7 @@ Reassembler::Slot* Reassembler::allocSlot_(uint16_t seq, uint32_t nowMs) {
   for (auto& s : slots_)
     if (s.cnt == 0) {
       s.seq = seq; s.cnt = 1;  // cnt set by caller; mark in use
-      s.recvBits = 0; s.fragSize = 0; s.lastLen = 0; s.tailSeen = false;
+      s.recvBits = 0; s.fragSize = 0; s.lastLen = 0;
       s.lastTouchMs = nowMs;
       return &s;
     }
@@ -49,16 +48,17 @@ Reassembler::Slot* Reassembler::allocSlot_(uint16_t seq, uint32_t nowMs) {
   for (auto& s : slots_)
     if (s.lastTouchMs < victim->lastTouchMs) victim = &s;
   victim->seq = seq; victim->cnt = 1; victim->recvBits = 0;
-  victim->fragSize = 0; victim->lastLen = 0; victim->tailSeen = false;
+  victim->fragSize = 0; victim->lastLen = 0;
   victim->lastTouchMs = nowMs;
   return victim;
 }
 
 void Reassembler::tryAdvance_() {
   // The FIRST completed frame baselines a booting receiver (rcvCum_ jumps
-  // to its seq — there is no earlier history to wait for). Afterwards the
-  // advance is strictly contiguous: a complete slot above a gap stays
-  // blocked and shows up in the ACK bitmap / NAK instead.
+  // to its seq — there is no earlier history to wait for); any partial
+  // slots at or below the new rcvCum are stale zombies and are freed.
+  // Afterwards the advance is strictly contiguous: a complete slot above
+  // a gap stays blocked and shows up in the ACK bitmap / NAK instead.
   bool advanced = true;
   while (advanced) {
     advanced = false;
@@ -72,7 +72,11 @@ void Reassembler::tryAdvance_() {
           : (size_t)(s.cnt - 1) * s.fragSize + s.lastLen;
       if (deliver_) deliver_(dctx_, s.buf, total);
       rcvCum_ = s.seq;
-      haveBase_ = true;
+      if (!haveBase_) {
+        haveBase_ = true;
+        for (auto& z : slots_)
+          if (z.cnt != 0 && (int16_t)(z.seq - rcvCum_) <= 0) z.cnt = 0;
+      }
       s.cnt = 0;  // free
       advanced = true;
     }
@@ -94,7 +98,7 @@ FragRx Reassembler::onFragment(uint16_t seq, uint8_t idx, uint8_t cnt,
     // may use a different, even smaller, cnt). Reset under new cnt;
     // the arriving fragment is stored under the new layout and
     // META_CONFLICT is reported so the caller can count the event.
-    s->recvBits = 0; s->fragSize = 0; s->lastLen = 0; s->tailSeen = false;
+    s->recvBits = 0; s->fragSize = 0; s->lastLen = 0;
     s->cnt = cnt; s->lastTouchMs = nowMs;
     outcome = FragRx::META_CONFLICT;
   } else if (s == nullptr) {
@@ -106,17 +110,13 @@ FragRx Reassembler::onFragment(uint16_t seq, uint8_t idx, uint8_t cnt,
   // Placement: non-last fragments are full and define fragSize; the
   // last fragment sits at (cnt-1)*fragSize. A last-fragment arriving
   // before any non-last (fragSize unknown) is accepted but not stored
-  // — tailSeen marks it so the NAK mask does not re-request it, while
+  // — its bytes are not held, so the NAK mask keeps requesting it, and
   // completeness still waits for the re-received tail (converges, P-05).
   if (idx + 1 == cnt && cnt > 1) {
-    if (s->fragSize == 0) {
-      s->tailSeen = true;                               // seen, unplaceable
-      return FragRx::ACCEPTED;
-    }
+    if (s->fragSize == 0) return FragRx::ACCEPTED;      // unplaceable yet
     if ((size_t)(cnt - 1) * s->fragSize + n > L3_MAX) return FragRx::ACCEPTED;
     memcpy(s->buf + (size_t)(cnt - 1) * s->fragSize, data, n);
     s->lastLen = (uint16_t)n;
-    s->tailSeen = false;
   } else {
     s->fragSize = (uint16_t)n;                           // full fragment
     if ((size_t)idx * n + n > L3_MAX) return FragRx::ACCEPTED;
@@ -132,15 +132,10 @@ RxReport Reassembler::report() const {
   RxReport r{};
   r.ackBitmap = 0;
   r.nakCount = 0;
-  // Window includes rcvCum itself (bit 7, complete by definition) once a
-  // baseline exists; before it, the window starts at rcvCum+1.
-  const uint16_t base = haveBase_ ? rcvCum_ : (uint16_t)(rcvCum_ + 1);
+  // Section 5.2: the bitmap window is ALWAYS rcvCum+1 .. rcvCum+8; the
+  // cumulative count itself rides in the ACK's SEQ field, not the bitmap.
   for (uint8_t i = 0; i < kSlots; ++i) {
-    const uint16_t seq = (uint16_t)(base + i);
-    if (haveBase_ && i == 0) {
-      r.ackBitmap |= (uint8_t)(1u << (7 - i));
-      continue;
-    }
+    const uint16_t seq = (uint16_t)(rcvCum_ + 1 + i);
     const Slot* found = nullptr;
     for (auto& s : slots_)
       if (s.cnt != 0 && s.seq == seq) { found = &s; break; }
@@ -150,11 +145,7 @@ RxReport Reassembler::report() const {
       r.ackBitmap |= (uint8_t)(1u << (7 - i));
     } else if (r.nakCount < 4) {
       r.nakSeqs[r.nakCount] = seq;
-      // A seen-but-unplaceable tail is not re-requested.
-      const uint16_t mask = (uint16_t)(~found->recvBits & all);
-      r.nakMasks[r.nakCount] =
-          (uint8_t)(found->tailSeen ? mask & (uint16_t)~(1u << (found->cnt - 1))
-                                    : mask);
+      r.nakMasks[r.nakCount] = (uint8_t)(~found->recvBits & all);
       ++r.nakCount;
     }
   }

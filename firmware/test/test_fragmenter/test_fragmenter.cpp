@@ -114,7 +114,9 @@ static void test_reverse_order_converges_p05() {
   flr::RxReport rep = r.report();
   TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)rep.nakCount);
   TEST_ASSERT_EQUAL_UINT16(1, rep.nakSeqs[0]);
-  TEST_ASSERT_EQUAL_UINT8(0x03, rep.nakMasks[0]);  // frag0+frag1 missing
+  TEST_ASSERT_EQUAL_UINT8(0x07, rep.nakMasks[0]);  // all three fragments
+  // missing: the tail was seen but its bytes are not held — the mask
+  // includes it so the NAK fast path re-requests it
   // idx1 teaches fragSize, idx2 repeat becomes placeable, idx0 completes
   TEST_ASSERT_EQUAL_INT(flr::FragRx::ACCEPTED,
       r.onFragment(1, 1, 3, f + 10, 10, 0));
@@ -176,12 +178,14 @@ static void test_report_bitmap_and_nak_shape() {
   r.onFragment(3, 0, 1, f, 8, 0);                  // seq3 complete (blocked)
   r.onFragment(4, 1, 2, f + 4, 4, 0);              // seq4: frag1 only
   flr::RxReport rep = r.report();
-  TEST_ASSERT_EQUAL_UINT8(0b10100000, rep.ackBitmap);  // seq1,seq3 bits
+  TEST_ASSERT_EQUAL_UINT8(0b01000000, rep.ackBitmap);
+  // rcvCum=1 after seq1 delivered: bit6 = seq3 (rcvCum+2) complete;
+  // seq1 itself is <= cum and correctly absent from the bitmap (5.2)
   TEST_ASSERT_EQUAL_UINT32(2, (uint32_t)rep.nakCount);
   TEST_ASSERT_EQUAL_UINT16(2, rep.nakSeqs[0]);
   TEST_ASSERT_EQUAL_UINT8(0x02, rep.nakMasks[0]);  // frag1 missing
   TEST_ASSERT_EQUAL_UINT16(4, rep.nakSeqs[1]);
-  TEST_ASSERT_EQUAL_UINT8(0x01, rep.nakMasks[1]);  // frag0 missing
+  TEST_ASSERT_EQUAL_UINT8(0x03, rep.nakMasks[1]);  // frag0 + unplaced tail
 }
 
 static void test_nak_truncates_lowest_first() {
