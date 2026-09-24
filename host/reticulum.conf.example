@@ -1,0 +1,16 @@
+# FLRNode host example — copy to ~/.reticulum/reticulum.conf on each Pi.
+# Adjust serial_port to the by-id path of the attached D1 mini
+# (ls /dev/serial/by-id/). Speed must stay 921600 8N1.
+
+[reticulum]
+  enable_transport = yes
+  share_instance = yes
+
+[[Default Interface]]
+  type = SerialInterface
+  interface_enabled = yes
+  serial_port = /dev/serial/by-id/usb-1a86_7523_IFLNodeBridge-if00-port0
+  serial_speed = 921600
+  databits = 8
+  parity = none
+  stopbits = 1
