@@ -312,6 +312,7 @@ static void test_lossy_soak_full_recovery() {
   const size_t sizes[6] = {10, 100, 246, 247, 400, 512};
   uint32_t t = 0;
   for (int i = 0; i < 18; ++i) {
+    f[0] = (uint8_t)i;  // per-frame seed: identity is pinned, not just size
     TEST_ASSERT_TRUE(n.sa.tx(f, sizes[i % 6], t));
     // 120 ms of stepping per frame: ACKs flow, the window drains, and
     // the backlog never exceeds its 4-frame bound (capacity is 12).
@@ -328,6 +329,7 @@ static void test_lossy_soak_full_recovery() {
   for (size_t di = 0; di < n.delivered.size(); ++di) {
     while (fi < 18 && n.delivered[di].size() != sizes[fi % 6]) ++fi;
     TEST_ASSERT_TRUE(fi < 18);
+    f[0] = (uint8_t)fi;  // expected seed of feed frame fi
     TEST_ASSERT_EQUAL_UINT8_ARRAY(f, n.delivered[di].data(), sizes[fi % 6]);
     ++fi;
   }

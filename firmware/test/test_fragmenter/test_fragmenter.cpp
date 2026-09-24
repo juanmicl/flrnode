@@ -53,6 +53,16 @@ static void test_max_l3_frame_espnow_and_flrc() {
   }
 }
 
+static void test_cnt_over_limit_rejected() {
+  uint8_t f[512];
+  for (size_t i = 0; i < 512; ++i) f[i] = (uint8_t)(i * 11);
+  Cap cap;
+  // ceil(512/30) = 18 > 15: the overflow-free ceil keeps this guard
+  // reachable by plain arithmetic — reject with zero sink calls
+  TEST_ASSERT_EQUAL_UINT8(0, flr::fragSplit(f, 512, sinkFn, &cap, 30));
+  TEST_ASSERT_EQUAL_UINT32(0, (uint32_t)cap.idx.size());
+}
+
 static void test_invalid_inputs() {
   uint8_t f[4] = {1, 2, 3, 4};
   TEST_ASSERT_EQUAL_UINT8(0, flr::fragSplit(nullptr, 4, sinkFn, nullptr, 246));
@@ -219,13 +229,23 @@ static void test_gc_advance_skips_absent_head() {
   flr::Reassembler r; Delivered d;
   r.begin(deliverFn, &d);
   uint8_t f[8] = {1, 2, 3, 4, 5, 6, 7, 8};
-  r.onFragment(1, 0, 2, f, 4, 0);   // seq1 partial (frag0 only)
-  r.onFragment(2, 0, 1, f, 8, 0);   // seq2 complete but blocked behind seq1
-  r.tick(5001);                     // seq1 partial ages out; GC-advance
-                                    // skips the absent head; seq2 delivers
-  TEST_ASSERT_EQUAL_UINT16(2, r.rcvCum());
-  TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)d.frames.size());
-  TEST_ASSERT_EQUAL_UINT8_ARRAY(f, d.frames[0].data(), 8);
+  // Pre-baseline guard: absent heads are never skipped before the first
+  // delivery (a restarted sender's early seqs must not desync rcvCum)
+  r.onFragment(2, 0, 2, f, 4, 0);   // seq2 partial, pre-baseline
+  r.tick(5001);                     // ages out; rcvCum must NOT move
+  TEST_ASSERT_EQUAL_UINT16(0, r.rcvCum());
+  TEST_ASSERT_EQUAL_UINT32(0, (uint32_t)d.frames.size());
+  // Baseline, then the classic skip: partial head ages out, absent head
+  // is skipped, complete slot behind it delivers
+  r.onFragment(1, 0, 1, f, 8, 0);   // first completion baselines rcvCum=1
+  TEST_ASSERT_EQUAL_UINT16(1, r.rcvCum());
+  r.onFragment(3, 0, 2, f, 4, 0);   // seq3 partial (head 2 stays absent)
+  r.onFragment(4, 0, 1, f, 8, 0);   // seq4 complete but blocked behind 3
+  r.tick(5001);                     // seq3 partial ages out; GC-advance
+                                    // skips absent 2; seq4 delivers
+  TEST_ASSERT_EQUAL_UINT16(4, r.rcvCum());
+  TEST_ASSERT_EQUAL_UINT32(2, (uint32_t)d.frames.size());
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(f, d.frames[1].data(), 8);
 }
 
 static void test_accepted_dup_outcome() {
@@ -248,6 +268,7 @@ int main() {
   RUN_TEST(test_single_fragment);
   RUN_TEST(test_ceil_math_and_tail);
   RUN_TEST(test_max_l3_frame_espnow_and_flrc);
+  RUN_TEST(test_cnt_over_limit_rejected);
   RUN_TEST(test_invalid_inputs);
   RUN_TEST(test_reassembly_single_fragment);
   RUN_TEST(test_reassembly_three_in_order);
