@@ -1,5 +1,6 @@
 #include <unity.h>
 #include <string.h>
+#include <vector>
 #include "core/hdlc.h"
 
 using flr::HdlcDeframer;
@@ -64,6 +65,71 @@ static void test_resync_on_garbage_and_crc_error() {
   TEST_ASSERT_EQUAL_UINT32(2, d.resyncCount());  // junk run + CRC failure
 }
 
+
+// ---- M2 carry-overs (Task 9) ----
+struct MultiCap {
+  int calls = 0;
+  uint8_t types[2];
+  std::vector<std::vector<uint8_t>> payloads;
+};
+static void onFrameMulti(void* ctx, uint8_t type, const uint8_t* p, size_t n) {
+  MultiCap* c = static_cast<MultiCap*>(ctx);
+  if (c->calls < 2) c->types[c->calls] = type;
+  c->payloads.emplace_back(p, p + n);
+  ++c->calls;
+}
+
+static void test_back_to_back_frames_rule6() {
+  const uint8_t p1[3] = {'a', 'b', 'c'};
+  const uint8_t p2[2] = {'x', 'y'};
+  uint8_t w[64];
+  size_t total = hdlcFrame(0x01, p1, 3, w, sizeof(w));
+  total += hdlcFrame(0x01, p2, 2, w + total, sizeof(w) - total);
+  MultiCap cap;
+  HdlcDeframer d;
+  d.begin(onFrameMulti, &cap);
+  for (size_t i = 0; i < total; ++i) d.feed(w[i]);
+  TEST_ASSERT_EQUAL_INT32(2, cap.calls);
+  TEST_ASSERT_EQUAL_UINT32(3, (uint32_t)cap.payloads[0].size());
+  TEST_ASSERT_EQUAL_UINT32(2, (uint32_t)cap.payloads[1].size());
+  TEST_ASSERT_EQUAL_UINT32(0, d.resyncCount());
+}
+
+static void test_invalid_escape_then_recovery() {
+  MultiCap cap;
+  HdlcDeframer d;
+  d.begin(onFrameMulti, &cap);
+  // 7D followed by 0x31 (invalid): resync at feed, raw byte kept, CRC
+  // then fails at the flag -> second resync.
+  const uint8_t junk[7] = {0x7E, 0x01, 0x7D, 0x31, 0x00, 0x00, 0x7E};
+  for (uint8_t b : junk) d.feed(b);
+  TEST_ASSERT_EQUAL_INT32(0, cap.calls);
+  TEST_ASSERT_EQUAL_UINT32(2, d.resyncCount());
+  const uint8_t p[2] = {'o', 'k'};
+  uint8_t w[32];
+  const size_t n = hdlcFrame(0x01, p, 2, w, sizeof(w));
+  for (size_t i = 0; i < n; ++i) d.feed(w[i]);
+  TEST_ASSERT_EQUAL_INT32(1, cap.calls);
+  TEST_ASSERT_EQUAL_UINT32(2, d.resyncCount());  // no new resyncs
+}
+
+static void test_oversize_chunked_drop_recovers() {
+  MultiCap cap;
+  HdlcDeframer d;
+  d.begin(onFrameMulti, &cap);
+  d.feed(0x7E);
+  for (int i = 0; i < 600; ++i) d.feed(0x55);    // > kMaxAcc (515)
+  d.feed(0x7E);
+  TEST_ASSERT_EQUAL_INT32(0, cap.calls);
+  TEST_ASSERT_GREATER_OR_EQUAL_UINT32(1, d.resyncCount());
+  const uint8_t p[2] = {'h', 'i'};
+  uint8_t w[32];
+  const size_t n = hdlcFrame(0x01, p, 2, w, sizeof(w));
+  for (size_t i = 0; i < n; ++i) d.feed(w[i]);
+  TEST_ASSERT_EQUAL_INT32(1, cap.calls);
+  TEST_ASSERT_EQUAL_UINT32(2, (uint32_t)cap.payloads[0].size());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_crc_known_answer);
@@ -71,5 +137,8 @@ int main() {
   RUN_TEST(test_roundtrip_stuffing_bytes);
   RUN_TEST(test_roundtrip_max_payload);
   RUN_TEST(test_resync_on_garbage_and_crc_error);
+  RUN_TEST(test_back_to_back_frames_rule6);
+  RUN_TEST(test_invalid_escape_then_recovery);
+  RUN_TEST(test_oversize_chunked_drop_recovers);
   return UNITY_END();
 }
