@@ -126,7 +126,9 @@ NEW → FRAGMENTED → IN_FLIGHT ── cumulative ACK ≥ SEQ ──► DONE
 ```
 
 - Window: **W = 8** frames IN_FLIGHT simultaneously (per sender, global).
-  Sender MUST NOT emit a DATA-FRAG with SEQ > cumulative_ack + W − 1.
+  Sender MUST NOT emit a DATA-FRAG with SEQ > cumulative_ack + W (the
+  receiver window is rcv_cum+1..rcv_cum+8; the pre-amendment "+W - 1"
+  bounded one seq short of it).
 - Per-fragment retransmission timer: `T_retry = 60 ms << retry_count`,
   capped at 500 ms. MAX_RETRIES = 5. Retransmit ONLY fragments not covered
   by the latest ACK/NAK bitmap, with RETRY flag set.
@@ -195,7 +197,13 @@ All exposed via CTRL (§8). Airtime (ms) counted at L1.
 4. Reassembly delivers ONLY on completeness (no partial delivery).
 5. If any fragment of a slot is older than `T_slot_gc = 5 s`, the slot is
    discarded (`slot_gc++`). The timer protects receiver memory only;
-   correctness comes from sender retries + NAK.
+   correctness comes from sender retries + NAK. GC-advance (amendment):
+   when the head-of-window slot (SEQ == rcv_cum+1) is absent and the
+   oldest existing in-window slot has aged past T_slot_gc, rcv_cum
+   advances past consecutively absent head slots (partial head slots are
+   never skipped), after which contiguous completes deliver normally.
+   This bounds head-of-line stalls caused by sender-DROPPED frames: a
+   permanent gap cannot wedge the window beyond T_slot_gc.
 
 Memory budget (per peer): 8 slots × (15/15 used worst case 512 B + 32 B
 meta) ≈ 4.4 KB. Acceptable on ESP8266. Document actuals in code comments.
