@@ -209,6 +209,167 @@ static void test_stale_is_silent() {
   TEST_ASSERT_EQUAL_UINT32(staleBefore + 1, s.stats().rxStale);
 }
 
+// ---- Integration over a wired mock pair (Task 6) ----
+#include <string.h>
+
+struct TwoNode {
+  MockTransport ta, tb;
+  flr::ArqSession sa, sb;
+  std::vector<std::vector<uint8_t>> delivered;
+  uint32_t curT = 0;
+
+  void init(uint16_t seedA = 0) {
+    ta.wire(&tb); tb.wire(&ta);
+    if (seedA) sa.begin(&ta, 0, seedA); else sa.begin(&ta, 0);
+    sb.begin(&tb, 0);
+    sb.onDelivered([](void* c, const uint8_t* d, size_t n) {
+      static_cast<TwoNode*>(c)->delivered.emplace_back(d, d + n);
+    }, this);
+    ta.onFrame([](void* c, const uint8_t* d, size_t n, int16_t) {
+      auto* N = static_cast<TwoNode*>(c);
+      N->sa.onPdu(d, n, N->curT);
+    }, this);
+    tb.onFrame([](void* c, const uint8_t* d, size_t n, int16_t) {
+      auto* N = static_cast<TwoNode*>(c);
+      N->sb.onPdu(d, n, N->curT);
+    }, this);
+  }
+  void step(uint32_t now) {
+    curT = now;
+    sa.tick(now);
+    sb.tick(now);
+    ta.pump();
+    tb.pump();
+  }
+  void run(uint32_t from, uint32_t to, uint32_t dt = 5) {
+    for (uint32_t t = from; t < to; t += dt) step(t);
+  }
+};
+
+static void test_p04_happy_path_end_to_end() {
+  TwoNode n;
+  n.init();
+  uint8_t f[20];
+  for (int i = 0; i < 20; ++i) f[i] = (uint8_t)(i * 5);
+  TEST_ASSERT_TRUE(n.sa.tx(f, 20, 0));
+  n.run(0, 60);
+  TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)n.delivered.size());
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(f, n.delivered[0].data(), 20);
+  TEST_ASSERT_EQUAL_UINT32(1, n.sb.stats().ackSent);
+  TEST_ASSERT_EQUAL_UINT32(0, n.sa.stats().txRetries);
+  // ACK retired the sender window: 8 more frames accepted
+  for (int i = 0; i < 8; ++i) TEST_ASSERT_TRUE(n.sa.tx(f, 20, 60));
+}
+
+static void test_p08_gap_nak_exact_recovery() {
+  TwoNode n;
+  n.init();
+  n.ta.setDropEvery(2);      // drops the 2nd send: fragment 1 of seq 1
+  static uint8_t f[500];
+  for (size_t i = 0; i < 500; ++i) f[i] = (uint8_t)(i ^ 0xA7);
+  TEST_ASSERT_TRUE(n.sa.tx(f, 500, 0));       // 3 fragments
+  n.run(0, 1200);   // long enough: frag1's retransmits must slip the
+                    // dropEvery(2) parity and the covered-skip ladder
+  TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)n.delivered.size());
+  TEST_ASSERT_EQUAL_UINT32(500, (uint32_t)n.delivered[0].size());
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(f, n.delivered[0].data(), 500);
+  TEST_ASSERT_EQUAL_UINT32(0, n.sa.stats().txDropped);
+  TEST_ASSERT_GREATER_OR_EQUAL_UINT32(1, n.sb.stats().nakSent);
+  TEST_ASSERT_GREATER_OR_EQUAL_UINT32(1, n.sa.stats().txRetries);
+}
+
+static void test_p10_overflow_empty_nak() {
+  TwoNode n;
+  n.init();
+  flr::L2Pdu h{};
+  h.ftype = flr::L2_DATA_FRAG; h.seq = 50; h.fragIdx = 0; h.fragCnt = 1;
+  const uint8_t p[4] = {1, 2, 3, 4};
+  uint8_t wire[16];
+  const size_t w = flr::l2Encode(h, p, 4, wire, sizeof(wire));
+  TEST_ASSERT_TRUE(n.ta.send(wire, w));       // 50 >> rcvCum+8
+  n.run(0, 30);
+  TEST_ASSERT_EQUAL_UINT32(1, n.sb.stats().rxWindowOverflow);
+  TEST_ASSERT_EQUAL_UINT32(0, (uint32_t)n.delivered.size());
+}
+
+static void test_p11_seq_wrap() {
+  TwoNode n;
+  n.init(65533);               // seqs 65534, 65535, 1 (0 skipped)
+  uint8_t f[4] = {0, 0, 0, 0};
+  for (int i = 0; i < 3; ++i) TEST_ASSERT_TRUE(n.sa.tx(f, 4, 0));
+  n.run(0, 80);
+  TEST_ASSERT_EQUAL_UINT32(3, (uint32_t)n.delivered.size());
+  TEST_ASSERT_EQUAL_UINT32(0, n.sa.stats().txDropped);
+}
+
+static void test_lossy_soak_full_recovery() {
+  TwoNode n;
+  n.init();
+  n.ta.setDropEvery(5);
+  n.tb.setDropEvery(7);
+  static uint8_t f[flr::L3_MAX];
+  for (size_t i = 0; i < flr::L3_MAX; ++i) f[i] = (uint8_t)(i * 7 + 3);
+  const size_t sizes[6] = {10, 100, 246, 247, 400, 512};
+  uint32_t t = 0;
+  for (int i = 0; i < 18; ++i) {
+    TEST_ASSERT_TRUE(n.sa.tx(f, sizes[i % 6], t));
+    // 120 ms of stepping per frame: ACKs flow, the window drains, and
+    // the backlog never exceeds its 4-frame bound (capacity is 12).
+    n.run(t, t + 120, 5);
+    t += 120;
+  }
+  n.run(t, t + 8000, 5);   // settle: retries, NAKs and GC-advance
+  // GC-advance (protocol amendment): a retry-exhausted DROPPED frame
+  // leaves a gap the receiver skips after T_slot_gc — delivered is
+  // every NON-dropped frame, in order (a subsequence of the feed).
+  const uint32_t dropped = n.sa.stats().txDropped;
+  TEST_ASSERT_EQUAL_UINT32(18 - dropped, (uint32_t)n.delivered.size());
+  size_t fi = 0;
+  for (size_t di = 0; di < n.delivered.size(); ++di) {
+    while (fi < 18 && n.delivered[di].size() != sizes[fi % 6]) ++fi;
+    TEST_ASSERT_TRUE(fi < 18);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(f, n.delivered[di].data(), sizes[fi % 6]);
+    ++fi;
+  }
+  TEST_ASSERT_GREATER_OR_EQUAL_UINT32(1, n.sa.stats().txRetries);
+  TEST_ASSERT_GREATER_OR_EQUAL_UINT32(1, n.sb.stats().nakSent);
+}
+
+static void test_ack_discipline_dup_vs_stale() {
+  TwoNode n;
+  n.init();
+  static uint8_t f[500];
+  TEST_ASSERT_TRUE(n.sa.tx(f, 500, 0));       // seq 1: 3 fragments
+  n.run(0, 100);
+  TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)n.delivered.size());
+  TEST_ASSERT_EQUAL_UINT32(1, n.sb.stats().ackSent);  // NOT per-fragment
+  // STALE (seq <= rcvCum): SILENT per P-07 — no re-ACK, no dup count
+  flr::L2Pdu h{};
+  h.ftype = flr::L2_DATA_FRAG; h.seq = 1; h.fragIdx = 0; h.fragCnt = 1;
+  const uint8_t p[4] = {9, 9, 9, 9};
+  uint8_t wire[16];
+  size_t w = flr::l2Encode(h, p, 4, wire, sizeof(wire));
+  TEST_ASSERT_TRUE(n.ta.send(wire, w));
+  n.run(100, 140);
+  TEST_ASSERT_EQUAL_UINT32(1, n.sb.stats().ackSent);   // still one
+  TEST_ASSERT_EQUAL_UINT32(0, n.sb.stats().rxDups);
+  // rxStale >= 1: the crafted stale fragment AND any in-flight NAK
+  // retransmissions crossing the completion all count as stale.
+  TEST_ASSERT_GREATER_OR_EQUAL_UINT32(1, n.sb.stats().rxStale);
+  TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)n.delivered.size());
+  // within-slot duplicate (P-06): re-ACK + rxDups, delivered once
+  TEST_ASSERT_TRUE(n.sa.tx(f, 300, 140));      // seq 2: 2 fragments
+  n.run(140, 200);                             // delivered; ACK #2
+  h.seq = 3; h.fragIdx = 0; h.fragCnt = 2;     // in-window partial slot
+  w = flr::l2Encode(h, p, 4, wire, sizeof(wire));
+  TEST_ASSERT_TRUE(n.ta.send(wire, w));
+  TEST_ASSERT_TRUE(n.ta.send(wire, w));        // exact duplicate
+  n.run(200, 260);
+  TEST_ASSERT_EQUAL_UINT32(3, n.sb.stats().ackSent);   // re-ACK fired
+  TEST_ASSERT_EQUAL_UINT32(1, n.sb.stats().rxDups);
+  TEST_ASSERT_EQUAL_UINT32(2, (uint32_t)n.delivered.size());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_tx_single_frame_on_air);
@@ -221,5 +382,11 @@ int main() {
   RUN_TEST(test_nak_retransmit_lost_recovers);
   RUN_TEST(test_covered_ladder_expiry);
   RUN_TEST(test_stale_is_silent);
+  RUN_TEST(test_p04_happy_path_end_to_end);
+  RUN_TEST(test_p08_gap_nak_exact_recovery);
+  RUN_TEST(test_p10_overflow_empty_nak);
+  RUN_TEST(test_p11_seq_wrap);
+  RUN_TEST(test_lossy_soak_full_recovery);
+  RUN_TEST(test_ack_discipline_dup_vs_stale);
   return UNITY_END();
 }

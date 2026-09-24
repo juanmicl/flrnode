@@ -1,4 +1,5 @@
 #include "core/fragmenter.h"
+#include "core/l2_pdu.h"
 #include <string.h>
 
 namespace flr {
@@ -33,14 +34,16 @@ void Reassembler::tick(uint32_t nowMs) {
     const uint16_t all = (uint16_t)((1u << s.cnt) - 1);
     if (s.recvBits != all) s.cnt = 0;  // partial → discard
   }
-  // GC-advance (section 6.5 amendment): while the head-of-window slot
-  // (rcvCum+1) is ABSENT and the oldest existing slot has aged past
-  // T_slot_gc, advance rcvCum past it. Partial heads are never skipped;
-  // a present head stops the advance (tryAdvance_ below then delivers
-  // contiguous completes). Boot guard: with no slots there is nothing
-  // aged, so rcvCum never advances prematurely.
+  // GC-advance (section 6.5 amendment): while the head-of-window slot is
+  // ABSENT and the oldest existing slot has aged past T_slot_gc, advance
+  // rcvCum past it (MODULAR, sentinel-skipping). Partial heads are never
+  // skipped; a present head stops the advance; tryAdvance_ below then
+  // delivers contiguous completes. Boot guard: with no slots there is
+  // nothing aged, so rcvCum never advances prematurely.
   for (;;) {
-    if (findSlot_((uint16_t)(rcvCum_ + 1)) != nullptr) break;
+    uint16_t head = (uint16_t)(rcvCum_ + 1);
+    if (head == L2_SEQ_SENTINEL) head = 1;  // sentinel skip
+    if (findSlot_(head) != nullptr) break;
     bool any = false;
     uint32_t oldest = 0;
     for (auto& s : slots_) {
@@ -48,7 +51,7 @@ void Reassembler::tick(uint32_t nowMs) {
       if (!any || s.lastTouchMs < oldest) { oldest = s.lastTouchMs; any = true; }
     }
     if (!any || nowMs - oldest <= kSlotGcMs) break;
-    ++rcvCum_;
+    rcvCum_ = head;
   }
   tryAdvance_();
 }
@@ -81,8 +84,9 @@ void Reassembler::tryAdvance_() {
   // The FIRST completed frame baselines a booting receiver (rcvCum_ jumps
   // to its seq — there is no earlier history to wait for); any partial
   // slots at or below the new rcvCum are stale zombies and are freed.
-  // Afterwards the advance is strictly contiguous: a complete slot above
-  // a gap stays blocked and shows up in the ACK bitmap / NAK instead.
+  // Afterwards the advance is strictly contiguous, MODULAR, and skips the
+  // 0 sentinel (senders never use it): a complete slot above a gap stays
+  // blocked and shows up in the ACK bitmap / NAK instead.
   bool advanced = true;
   while (advanced) {
     advanced = false;
@@ -90,7 +94,11 @@ void Reassembler::tryAdvance_() {
       if (s.cnt == 0) continue;
       const uint16_t all = (uint16_t)((1u << s.cnt) - 1);
       if (s.recvBits != all) continue;
-      if (haveBase_ && s.seq != (uint16_t)(rcvCum_ + 1)) continue;
+      if (haveBase_) {
+        uint16_t expected = (uint16_t)(rcvCum_ + 1);
+        if (expected == L2_SEQ_SENTINEL) expected = 1;
+        if (s.seq != expected) continue;
+      }
       const size_t total = (s.cnt == 1)
           ? s.lastLen
           : (size_t)(s.cnt - 1) * s.fragSize + s.lastLen;
@@ -99,7 +107,7 @@ void Reassembler::tryAdvance_() {
       if (!haveBase_) {
         haveBase_ = true;
         for (auto& z : slots_)
-          if (z.cnt != 0 && (int16_t)(z.seq - rcvCum_) <= 0) z.cnt = 0;
+          if (z.cnt != 0 && (uint16_t)(z.seq - rcvCum_) >= 32768) z.cnt = 0;
       }
       s.cnt = 0;  // free
       advanced = true;
@@ -110,10 +118,20 @@ void Reassembler::tryAdvance_() {
 FragRx Reassembler::onFragment(uint16_t seq, uint8_t idx, uint8_t cnt,
                                const uint8_t* data, size_t n,
                                uint32_t nowMs) {
-  const int16_t relStale = (int16_t)(seq - rcvCum_);
-  if (relStale <= 0) return FragRx::STALE;              // seq <= rcvCum
-  const int16_t rel = (int16_t)(seq - (uint16_t)(rcvCum_ + 1));
-  if (rel > (int16_t)(kSlots - 1)) return FragRx::OVERFLOW;
+  // Stale/window classification is baseline-gated and MODULAR (P-11: a
+  // booting receiver accepts the first frame wherever its seq starts,
+  // e.g. 65534 — signed-negative distance = wrap-ahead, accepted; a
+  // plainly-forward distance beyond the window overflows). After the
+  // baseline: behind (>= 32768 modular) = stale, ahead > window =
+  // overflow.
+  const uint16_t relRaw = (uint16_t)(seq - rcvCum_);
+  const int16_t srel = (int16_t)relRaw;
+  if (haveBase_) {
+    if (relRaw == 0 || relRaw >= 32768) return FragRx::STALE;  // seq <= cum
+    if (relRaw > (uint16_t)kSlots) return FragRx::OVERFLOW;
+  } else if (srel > (int16_t)kSlots) {
+    return FragRx::OVERFLOW;
+  }
 
   FragRx outcome = FragRx::ACCEPTED;
   Slot* s = findSlot_(seq);
