@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "core/arq_session.h"
+#include "core/config_store.h"
 #include "core/hdlc.h"
 #include "core/transport.h"
 
@@ -32,17 +33,32 @@ class BridgeApp {
   void tick(uint32_t nowMs);
   uint32_t droppedOutputBytes() const { return oDropped_; }
 
+  // Register the persist callback (main does the EEPROM write).
+  // Context: setup. Blocking: never. Failure: none.
+  void onConfigPersist(void (*cb)(const Config&, void*), void* ctx);
+  // Seed the live config (main loads EEPROM once at boot).
+  // Context: setup, before serving requests. Blocking: never.
+  void setConfig(const Config& c) { cfg_ = c; }
+  // The live config; get/set mutations land here (main wiring owns
+  // persistence via onConfigPersist). Context: pump/loop. Blocking: O(1).
+  const Config& config() const { return cfg_; }
+
  private:
   static void onRadio_(void* ctx, const uint8_t* d, size_t n, int16_t);
   static void onDelivered_(void* ctx, const uint8_t* d, size_t n);
   static void onSerialFrame_(void* ctx, const uint8_t* p, size_t n);
   void emitFrame_(const uint8_t* payload, size_t n);
   void handleCtrl_(const uint8_t* payload, size_t n);
+  void handleGetSet_(const char* buf);
+  void replyRaw_(const char* s);
   Transport& t_;
   void* sinkCtx_;
   ByteSink sink_;
   ArqSession arq_;
   HdlcDeframer def_;
+  Config cfg_{};
+  void (*persistCb_)(const Config&, void*) = nullptr;
+  void* persistCtx_ = nullptr;
   uint32_t nowMs_ = 0;
   uint8_t oring_[1300];
   size_t oHead_ = 0, oTail_ = 0;

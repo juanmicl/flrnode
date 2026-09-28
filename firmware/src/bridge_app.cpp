@@ -1,5 +1,6 @@
 #include "bridge_app.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 namespace flr {
@@ -18,10 +19,18 @@ void BridgeApp::begin(uint32_t nowMs) {
 void BridgeApp::onSerialFrame_(void* ctx, const uint8_t* p, size_t n) {
   auto* self = static_cast<BridgeApp*>(ctx);
   // CTRL detection heuristic (the RNS wire format has no type byte):
-  // a JSON-looking frame (`{"` prefix) at control-message size.
-  // Binary DATA starting with 7B 22 stays DATA unless it is < 96 B —
-  // real RNS frames never open with `{"`.
-  if (n >= 2 && n < 96 && p[0] == '{' && p[1] == '"') {
+  // a JSON-looking frame (`{"` prefix) at control-message size whose
+  // every byte is printable ASCII (0x20..0x7E) — binary payloads that
+  // merely start with `{"` fall through to the DATA path. ONE trailing
+  // '\n' is exempt from the scan (§8: requests are \n-terminated;
+  // handleCtrl_ trims it).
+  size_t plen = n;
+  if (plen > 0 && p[plen - 1] == '\n') --plen;
+  bool printable = true;
+  for (size_t i = 0; i < plen; ++i) {
+    if (p[i] < 0x20 || p[i] > 0x7E) { printable = false; break; }
+  }
+  if (n >= 2 && n < 96 && printable && p[0] == '{' && p[1] == '"') {
     self->handleCtrl_(p, n);
   } else {
     self->arq_.tx(p, n, self->nowMs_);  // counters carry rejection paths
@@ -66,8 +75,107 @@ void BridgeApp::handleCtrl_(const uint8_t* payload, size_t n) {
     emitFrame_((const uint8_t*)line, strlen(line));
     return;
   }
+  if (strstr(buf, "\"cmd\":\"get\"") != nullptr ||
+      strstr(buf, "\"cmd\":\"set\"") != nullptr) {
+    handleGetSet_(buf);
+    return;
+  }
   const char err[] = "{\"err\":\"unknown_cmd\"}";
   emitFrame_((const uint8_t*)err, sizeof(err) - 1);
+}
+
+void BridgeApp::onConfigPersist(void (*cb)(const Config&, void*),
+                                void* ctx) {
+  persistCb_ = cb;
+  persistCtx_ = ctx;
+}
+
+void BridgeApp::replyRaw_(const char* s) {
+  emitFrame_((const uint8_t*)s, strlen(s));
+}
+
+void BridgeApp::handleGetSet_(const char* buf) {
+  // Extract "key":"<name>" from the bounded, strict-format copy.
+  const char* k = strstr(buf, "\"key\":\"");
+  if (k == nullptr) { replyRaw_("{\"err\":\"unknown_key\"}"); return; }
+  k += 7;
+  char key[16] = {0};
+  size_t ki = 0;
+  while (k[ki] != '"' && k[ki] != '\0' && ki < sizeof(key) - 1) {
+    key[ki] = k[ki];
+    ++ki;
+  }
+  key[ki] = '\0';
+  const bool isSet = strstr(buf, "\"cmd\":\"set\"") != nullptr;
+  if (!isSet) {
+    // GET: channel/tx_power/stats_period report their live value; pmk is
+    // write-only; rate is transport-bound (unsupported on ESP-NOW).
+    if (strcmp(key, "channel") == 0) {
+      char r[24];
+      snprintf(r, sizeof(r), "{\"channel\":%u}", (unsigned)cfg_.channel);
+      replyRaw_(r);
+    } else if (strcmp(key, "tx_power") == 0) {
+      char r[28];
+      snprintf(r, sizeof(r), "{\"tx_power\":%u}", (unsigned)cfg_.txPower);
+      replyRaw_(r);
+    } else if (strcmp(key, "stats_period") == 0) {
+      char r[32];
+      snprintf(r, sizeof(r), "{\"stats_period\":%u}", (unsigned)cfg_.statsPeriod);
+      replyRaw_(r);
+    } else if (strcmp(key, "pmk") == 0) {
+      replyRaw_("{\"err\":\"write_only\"}");
+    } else if (strcmp(key, "rate") == 0) {
+      replyRaw_("{\"err\":\"unsupported_transport\"}");
+    } else {
+      replyRaw_("{\"err\":\"unknown_key\"}");
+    }
+    return;
+  }
+  // SET: "val":<num> or "val":"<32 hex chars>".
+  const char* v = strstr(buf, "\"val\":");
+  if (v == nullptr) { replyRaw_("{\"err\":\"bad_value\"}"); return; }
+  v += 6;
+  if (strcmp(key, "channel") == 0) {
+    // Regulatory domain is a HARD boundary: reject, never wrap around.
+    const long val = strtol(v, nullptr, 10);
+    if (val < ConfigStore::kMinChannel || val > ConfigStore::kMaxChannel) {
+      replyRaw_("{\"err\":\"bad_value\"}");
+      return;
+    }
+    cfg_.channel = (uint8_t)val;
+  } else if (strcmp(key, "tx_power") == 0) {
+    // EIRP cap clamps DOWN, never rejects (compliance, never above 17).
+    long val = strtol(v, nullptr, 10);
+    if (val < 0) val = 0;
+    if (val > ConfigStore::kMaxPower) val = ConfigStore::kMaxPower;
+    cfg_.txPower = (uint8_t)val;
+  } else if (strcmp(key, "stats_period") == 0) {
+    long val = strtol(v, nullptr, 10);
+    if (val <= 0 || val > 3600) val = 5;  // same default as load()
+    cfg_.statsPeriod = (uint16_t)val;
+  } else if (strcmp(key, "pmk") == 0) {
+    if (v[0] != '"') { replyRaw_("{\"err\":\"bad_value\"}"); return; }
+    ++v;
+    uint8_t pmk[16];
+    for (int i = 0; i < 16; ++i) {
+      const char hex[3] = {v[2 * i], v[2 * i + 1], '\0'};
+      if (hex[0] == '\0' || hex[1] == '\0') {
+        replyRaw_("{\"err\":\"bad_value\"}");
+        return;
+      }
+      const long byte = strtol(hex, nullptr, 16);
+      pmk[i] = (uint8_t)byte;
+    }
+    memcpy(cfg_.pmk, pmk, 16);
+  } else if (strcmp(key, "rate") == 0) {
+    replyRaw_("{\"err\":\"unsupported_transport\"}");
+    return;
+  } else {
+    replyRaw_("{\"err\":\"unknown_key\"}");
+    return;
+  }
+  replyRaw_("{\"ok\":true}");
+  if (persistCb_) persistCb_(cfg_, persistCtx_);
 }
 
 void BridgeApp::emitFrame_(const uint8_t* payload, size_t n) {

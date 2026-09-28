@@ -52,6 +52,10 @@ struct Pair {
     for (uint8_t b : cap.bytes) d.feed(b);
     return r;
   }
+  // Node-ref overload so tests can say decodeOut(p.a) / decodeOut(p.b).
+  std::vector<std::vector<uint8_t>> decodeOut(const Node& side) {
+    return decodeOut(&side == &b);
+  }
 };
 
 static void feedHdlc(Pair& p, const uint8_t* payload, size_t n) {
@@ -184,6 +188,103 @@ static void test_lossy_recovery_through_bridge() {
   TEST_ASSERT_EQUAL_UINT8_ARRAY(f, frames[0].data(), 400);
 }
 
+// ---- M3 CTRL get/set (Task 2) ----
+
+static void feedCtrlRaw(Pair& p, const uint8_t* payload, size_t n) {
+  std::vector<uint8_t> wire(540);
+  const size_t w = flr::hdlcFrame(payload, n, wire.data(), wire.size());
+  for (size_t i = 0; i < w; ++i) p.a.app.onSerialByte(wire[i], p.curT);
+}
+
+static void test_ctrl_get_channel() {
+  Pair p; p.init();
+  const uint8_t cmd[] = {'{','"','c','m','d','"',':','"','g','e','t','"',',',
+                         '"','k','e','y','"',':','"','c','h','a','n','n','e','l','"','}'};
+  feedCtrlRaw(p, cmd, sizeof(cmd));
+  p.run(0, 40);
+  auto frames = p.decodeOut(p.a);
+  TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)frames.size());
+  std::string s(frames[0].begin(), frames[0].end());
+  TEST_ASSERT_TRUE(s.find("\"channel\":1") != std::string::npos);
+}
+
+static void test_ctrl_set_channel_ok_and_bad_value() {
+  Pair p; p.init();
+  const uint8_t ok[] = {'{','"','c','m','d','"',':','"','s','e','t','"',',','"','k','e','y','"',':',
+                        '"','c','h','a','n','n','e','l','"',',','"','v','a','l','"',':','6','}'};
+  feedCtrlRaw(p, ok, sizeof(ok));
+  p.run(0, 40);
+  auto frames = p.decodeOut(p.a);
+  TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)frames.size());
+  std::string s(frames[0].begin(), frames[0].end());
+  TEST_ASSERT_TRUE(s.find("\"ok\":true") != std::string::npos);
+  TEST_ASSERT_EQUAL_UINT8(6, p.a.app.config().channel);
+
+  const uint8_t bad[] = {'{','"','c','m','d','"',':','"','s','e','t','"',',','"','k','e','y','"',':',
+                         '"','c','h','a','n','n','e','l','"',',','"','v','a','l','"',':','1','4','}'};
+  feedCtrlRaw(p, bad, sizeof(bad));
+  p.run(40, 80);
+  frames = p.decodeOut(p.a);
+  std::string s2(frames.back().begin(), frames.back().end());
+  TEST_ASSERT_TRUE(s2.find("\"err\":\"bad_value\"") != std::string::npos);
+  TEST_ASSERT_EQUAL_UINT8(6, p.a.app.config().channel);  // unchanged
+}
+
+static void test_ctrl_set_tx_power_clamps() {
+  Pair p; p.init();
+  const uint8_t cmd[] = {'{','"','c','m','d','"',':','"','s','e','t','"',',','"','k','e','y','"',':',
+                         '"','t','x','_','p','o','w','e','r','"',',','"','v','a','l','"',':','3','0','}'};
+  feedCtrlRaw(p, cmd, sizeof(cmd));
+  p.run(0, 40);
+  auto frames = p.decodeOut(p.a);
+  std::string s(frames[0].begin(), frames[0].end());
+  TEST_ASSERT_TRUE(s.find("\"ok\":true") != std::string::npos);
+  TEST_ASSERT_EQUAL_UINT8(17, p.a.app.config().txPower);  // clamped
+}
+
+static void test_ctrl_pmk_write_only_and_rate() {
+  Pair p; p.init();
+  const uint8_t g[] = {'{','"','c','m','d','"',':','"','g','e','t','"',',',
+                       '"','k','e','y','"',':','"','p','m','k','"','}'};
+  feedCtrlRaw(p, g, sizeof(g));
+  const uint8_t sr[] = {'{','"','c','m','d','"',':','"','s','e','t','"',',','"','k','e','y','"',':',
+                        '"','r','a','t','e','"',',','"','v','a','l','"',':','5','0','0','}'};
+  feedCtrlRaw(p, sr, sizeof(sr));
+  p.run(0, 60);
+  auto frames = p.decodeOut(p.a);
+  TEST_ASSERT_EQUAL_UINT32(2, (uint32_t)frames.size());
+  std::string g1(frames[0].begin(), frames[0].end());
+  std::string g2(frames[1].begin(), frames[1].end());
+  TEST_ASSERT_TRUE(g1.find("\"err\":\"write_only\"") != std::string::npos);
+  TEST_ASSERT_TRUE(g2.find("\"err\":\"unsupported_transport\"") != std::string::npos);
+}
+
+static void test_ctrl_unknown_key() {
+  Pair p; p.init();
+  const uint8_t cmd[] = {'{','"','c','m','d','"',':','"','g','e','t','"',',',
+                         '"','k','e','y','"',':','"','n','o','p','e','"','}'};
+  feedCtrlRaw(p, cmd, sizeof(cmd));
+  p.run(0, 40);
+  auto frames = p.decodeOut(p.a);
+  std::string s(frames[0].begin(), frames[0].end());
+  TEST_ASSERT_TRUE(s.find("\"err\":\"unknown_key\"") != std::string::npos);
+}
+
+static void test_classifier_rejects_binary_ish_prefix() {
+  Pair p; p.init();
+  // A "frame" starting with {" but containing non-printable bytes must
+  // cross as DATA (be delivered to the radio path), not swallowed as CTRL.
+  uint8_t fake[20] = {'{','"', 0x01, 0x02, 0xFF, 0x10, 0x00, 0x7F, 0x01};
+  std::vector<uint8_t> wire(540);
+  const size_t w = flr::hdlcFrame(fake, 9, wire.data(), wire.size());
+  for (size_t i = 0; i < w; ++i) p.a.app.onSerialByte(wire[i], p.curT);
+  p.run(0, 40);
+  auto frames = p.decodeOut(p.b);   // arrives at B via the radio path
+  TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)frames.size());
+  TEST_ASSERT_EQUAL_UINT32(9, (uint32_t)frames[0].size());
+  TEST_ASSERT_EQUAL_UINT8('{', frames[0][0]);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_data_crosses_end_to_end);
@@ -195,5 +296,11 @@ int main() {
   RUN_TEST(test_oversize_data_rejected);
   RUN_TEST(test_output_chunking);
   RUN_TEST(test_lossy_recovery_through_bridge);
+  RUN_TEST(test_ctrl_get_channel);
+  RUN_TEST(test_ctrl_set_channel_ok_and_bad_value);
+  RUN_TEST(test_ctrl_set_tx_power_clamps);
+  RUN_TEST(test_ctrl_pmk_write_only_and_rate);
+  RUN_TEST(test_ctrl_unknown_key);
+  RUN_TEST(test_classifier_rejects_binary_ish_prefix);
   return UNITY_END();
 }
