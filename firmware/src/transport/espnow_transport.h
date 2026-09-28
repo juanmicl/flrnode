@@ -4,14 +4,28 @@
 #include "core/ring_buffer.h"
 #include "core/transport.h"
 
+#ifndef FLR_CHANNEL
+#define FLR_CHANNEL 1
+#endif
+
 namespace flr {
 
 // ESP-NOW unicast transport with CCMP (global PMK + per-peer LMK) and RX
 // filtering by peer MAC. Every ESP8266/ESP32 difference lives in the .cpp.
 class EspNowTransport : public Transport {
  public:
-  // Parses FLR_PEER_MAC ("AABBCCDDEEFF"), brings the radio up on
-  // FLR_CHANNEL, registers the encrypted peer. Context: setup.
+  // Set the operating channel (default: FLR_CHANNEL build pin). Call
+  // BEFORE begin(); begin() applies it to the radio and peer entry.
+  // Context: setup. Blocking: never. Failure: none (bounds are the
+  // caller's duty — ConfigStore clamps to 1..13).
+  void setChannel(uint8_t ch) { channel_ = ch; }
+  // Set TX power in dBm conducted (default 17.5 = the M1/M2 compliance
+  // pin). Call BEFORE begin(); begin() applies it. Context: setup.
+  // Blocking: never. Failure: none (caller clamps; ConfigStore caps 17).
+  void setTxPower(float dbm) { txPower_ = dbm; }
+  // Parses FLR_PEER_MAC ("AABBCCDDEEFF"), brings the radio up on the
+  // configured channel (see setChannel), registers the encrypted peer.
+  // Context: setup.
   // Blocking: < 200 ms radio init. Failure: false if esp_now_init fails.
   // peerMacConfigured() false means: caller must idle and print its own
   // MAC for provisioning (see checklist).
@@ -50,6 +64,8 @@ class EspNowTransport : public Transport {
   bool takeSendFailed() override;
 
  private:
+  uint8_t channel_ = FLR_CHANNEL;  // radio/peer channel (setChannel)
+  float txPower_ = 17.5f;          // dBm conducted (setTxPower); M1/M2 pin
   RingBuffer ring_;
   TransportStats stats_{};
   FrameCb cb_ = nullptr;

@@ -2,7 +2,9 @@
 #include <stdio.h>
 
 #if defined(FLR_APP_BRIDGE)
+#include <EEPROM.h>
 #include "bridge_app.h"
+#include "core/config_store.h"
 #include "led.h"
 #include "transport/espnow_transport.h"
 
@@ -12,16 +14,26 @@
 #include <WiFi.h>
 #endif
 
-#ifndef FLR_CHANNEL
-#define FLR_CHANNEL 1
-#endif
-
 static void serialBytesSink(void* /*ctx*/, const uint8_t* d, size_t n) {
   Serial.write(d, n);  // <= 256 B per tick; ~2.8 ms at 921600, in budget
 }
 
 static flr::EspNowTransport transport;
 static flr::BridgeApp s_bridge(transport, nullptr, serialBytesSink);
+
+static flr::ConfigStore cfgStore;
+static flr::Config cfg;
+static constexpr size_t kEepromAddr = 0;
+
+// Persist callback (registered via onConfigPersist): serialise the live
+// config and write it to EEPROM. Context: loop (CTRL set path).
+// Blocking: EEPROM commit ~ms. Failure: none (best-effort write).
+static void persistConfig(const flr::Config& c, void*) {
+  uint8_t img[flr::ConfigStore::kImage];
+  cfgStore.save(c, img);
+  EEPROM.put(kEepromAddr, img);
+  EEPROM.commit();
+}
 
 static void macHex(const uint8_t mac[6], char* out /*>=13*/) {
   snprintf(out, 13, "%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2],
@@ -31,6 +43,16 @@ static void macHex(const uint8_t mac[6], char* out /*>=13*/) {
 void setup() {
   Serial.begin(921600);  // AGENTS.md SerialInterface rule
   ledInit();
+  // Load + clamp the stored config BEFORE esp_now_init so the applied
+  // channel/power are the persisted ones from the very first transmit.
+  EEPROM.begin(flr::ConfigStore::kImage);
+  uint8_t img[flr::ConfigStore::kImage];
+  EEPROM.get(kEepromAddr, img);
+  const bool stored = cfgStore.load(img, sizeof(img), &cfg);
+  s_bridge.setConfig(cfg);
+  s_bridge.onConfigPersist(persistConfig, nullptr);
+  transport.setChannel(cfg.channel);        // begin() applies both
+  transport.setTxPower((float)cfg.txPower);
   if (!transport.begin()) {
     Serial.println(F("{\"t\":\"error\",\"init\":\"esp_now\"}"));
     while (true) ledSosStep();  // halted error loop; delay() allowed here
@@ -48,10 +70,11 @@ void setup() {
   macHex(transport.peerMac(), peer);
   char boot[160];
   snprintf(boot, sizeof(boot),
-           "{\"t\":\"boot\",\"fw\":\"m2\",\"mode\":\"bridge\",\"channel\":%d,"
-           "\"mac\":\"%s\",\"peer\":\"%s\",\"warn\":\"dev keys\"}",
-           FLR_CHANNEL, own,
-           transport.peerMacConfigured() ? peer : "UNSET-read-mac-above");
+           "{\"t\":\"boot\",\"fw\":\"m3\",\"mode\":\"bridge\",\"channel\":%d,"
+           "\"mac\":\"%s\",\"peer\":\"%s\",\"warn\":\"dev keys\"%s}",
+           cfg.channel, own,
+           transport.peerMacConfigured() ? peer : "UNSET-read-mac-above",
+           stored ? "" : ",\"cfg\":\"default\"");
   Serial.println(boot);
   if (!transport.peerMacConfigured()) {
     Serial.println(F("{\"t\":\"idle\",\"reason\":\"no peer mac\"}"));

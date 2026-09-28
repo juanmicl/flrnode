@@ -11,9 +11,8 @@
 #include <esp_wifi.h>
 #endif
 
-#ifndef FLR_CHANNEL
-#define FLR_CHANNEL 1
-#endif
+// FLR_CHANNEL default lives in the header (member initializer); the
+// runtime channel comes from setChannel().
 // Provide as -DFLR_PEER_MAC="AABBCCDDEEFF" at flash time (checklist
 // phase 1). Undefined or all-zero: begin() still succeeds but
 // peerMacConfigured() is false and the app idles for provisioning.
@@ -86,10 +85,10 @@ bool EspNowTransport::begin() {
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
 #ifdef ESP8266
-  // EIRP compliance: 17.5 dBm + 2 dBi antenna = 19.5 dBm EIRP <= 20 dBm
-  // (docs/compliance.md)
-  WiFi.setOutputPower(17.5);
-  wifi_set_channel(FLR_CHANNEL);          // BEFORE esp_now_init (quirk)
+  // EIRP compliance: txPower_ (default 17.5, M3: config-clamped <= 17)
+  // + 2 dBi antenna <= 19.5 dBm EIRP <= 20 dBm (docs/compliance.md)
+  WiFi.setOutputPower(txPower_);
+  wifi_set_channel(channel_);          // BEFORE esp_now_init (quirk)
   if (esp_now_init() != 0) return false;
   // The ESP8266 espnow API requires the node's own role before any TX;
   // without it esp_now_send returns -3 on every call (bench-verified).
@@ -99,14 +98,15 @@ bool EspNowTransport::begin() {
   esp_now_register_recv_cb(onRecvCb);
   esp_now_register_send_cb(onSendCb);
   if (peerMacConfigured())
-    esp_now_add_peer(peer_, ESP_NOW_ROLE_COMBO, FLR_CHANNEL,
+    esp_now_add_peer(peer_, ESP_NOW_ROLE_COMBO, channel_,
                      const_cast<uint8_t*>(DEV_LMK), 16);
 #else
-  // EIRP compliance: 17.5 dBm + 2 dBi antenna = 19.5 dBm EIRP <= 20 dBm
-  // (docs/compliance.md). Core 2.0.x wifi_power_t has no 17.5 dBm step,
-  // so use the 0.25 dBm-unit IDF API: 70 = 17.5 dBm.
-  esp_wifi_set_max_tx_power(70);
-  esp_wifi_set_channel(FLR_CHANNEL, WIFI_SECOND_CHAN_NONE);
+  // EIRP compliance: txPower_ (default 17.5, M3: config-clamped <= 17)
+  // + 2 dBi antenna <= 19.5 dBm EIRP <= 20 dBm (docs/compliance.md).
+  // Core 2.0.x wifi_power_t has no 17.5 dBm step, so use the 0.25 dBm-
+  // unit IDF API: 70 = 17.5 dBm, i.e. units of 0.25 dBm.
+  esp_wifi_set_max_tx_power((int8_t)(txPower_ * 4));
+  esp_wifi_set_channel(channel_, WIFI_SECOND_CHAN_NONE);
   if (esp_now_init() != ESP_OK) return false;
   esp_now_set_pmk(DEV_PMK);
   esp_now_register_recv_cb(onRecvCb);
@@ -114,7 +114,7 @@ bool EspNowTransport::begin() {
   if (peerMacConfigured()) {
     esp_now_peer_info_t p{};
     memcpy(p.peer_addr, peer_, 6);
-    p.channel = FLR_CHANNEL;
+    p.channel = channel_;
     p.encrypt = true;
     memcpy(p.lmk, DEV_LMK, 16);
     esp_now_add_peer(&p);
