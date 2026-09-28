@@ -265,6 +265,36 @@ flash and take effect on reboot EXCEPT `stats_period` (immediate).
 Unknown cmd → `{"err":"unknown_cmd"}`. JSON must be strict (no comments).
 On-air CTRL (ftype=3) uses the same schema minus `\n`, max 110 B.
 
+### M3 amendment: get/set and the error vocabulary
+
+Commands beyond `stats`: `{"cmd":"get","key":K}` replies
+`{"<K>":<value>}`; `{"cmd":"set","key":K,"val":V}` replies
+`{"ok":true,"effective":<applied-value>}` on successful numeric sets
+(the applied value, post-clamp; pmk sets reply bare `{"ok":true}`,
+never echoing the key). Valid keys and their semantics:
+
+- `channel` (1-13): persisted, applied on reboot; outside the domain
+  is rejected with `bad_value` (EU band plan; region constant is
+  revisited when the web flasher ships).
+- `tx_power` (dBm conducted): persisted, clamped to 17 (the ESP-NOW
+  compliance cap; see docs/compliance.md); the reply carries the
+  effective value. The clamp runs on set AND on boot-load.
+- `stats_period` (seconds): immediate effect, no reboot; 1-3600
+  accepted, 0 or >3600 falls back to 5.
+- `rate`: get and set are refused with `unsupported_transport` on the
+  ESP-NOW transport (no runtime rate; revisited with the FLRC tier).
+- `node_id`: read-only; get returns the bridge's own MAC as upper-case
+  hex (plumbed from the boot-line MAC parse).
+- `pmk`: write-only — get is refused with `write_only`; set persists
+  the 16-byte key (exactly 32 hex chars). The key transits local USB
+  serial in plaintext; physical port access equals key access.
+
+Error vocabulary (complete): `unknown_cmd`, `unknown_key`,
+`unsupported_transport`, `write_only`, `bad_value`. A bridge
+receiving `get`/`set` on firmware that predates them replies
+`unknown_cmd` (hosts treat that as "firmware predates config
+support — reflash").
+
 ---
 
 ## 9. Conformance test matrix (IDs referenced by test/golden/)

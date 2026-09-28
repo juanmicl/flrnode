@@ -10,6 +10,14 @@ ETSI EN 300 328 / EU decision 2021/1067.
   firmware (per transport begin); with a 2 dBi antenna EIRP =
   19.5 dBm, within the 20 dBm envelope. FLRC tier will
   default to 12.5 dBm (SX1280 hardware max) with a 2 dBi antenna.
+- M3 bridge firmware: `tx_power` is settable over the CTRL channel.
+  ConfigStore clamps to 17 dBm conducted on BOTH the set path and the
+  boot-load path (the set reply carries the effective value); the
+  loaded value is applied at `esp_now_init`, before the first
+  transmit. A stored config therefore never exceeds 17 dBm + 2 dBi =
+  19 dBm EIRP, inside the envelope. The 17.5 dBm pin above remains
+  the M1 ping-pong firmware default. An antenna-gain key (for
+  antennas above 2 dBi) arrives with the FLRC tier in M4.
 - If antenna gain > 7.5 dBi is configured, firmware must auto-reduce TX
   power and warn. Configuration surfaces must never offer settings that
   exceed EIRP.
