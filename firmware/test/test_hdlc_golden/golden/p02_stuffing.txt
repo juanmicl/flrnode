@@ -1,12 +1,9 @@
 # p02_stuffing
 7E
-01
 7D
 5E
 7D
 5D
 11
 22
-45
-E4
 7E

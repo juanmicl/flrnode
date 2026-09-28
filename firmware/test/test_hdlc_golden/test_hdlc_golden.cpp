@@ -29,12 +29,15 @@ static bool loadVector(const char* name, std::vector<uint8_t>* out) {
   return true;
 }
 
-static void checkAgainstGolden(const char* name, uint8_t type,
+// Byte-exact encoder check against the RNS-format vector (FLAG +
+// escaped payload + FLAG, no FCS, no type byte), plus a deframer
+// roundtrip back to the input payload.
+static void checkAgainstGolden(const char* name,
                                const std::vector<uint8_t>& payload) {
   std::vector<uint8_t> expected;
   if (!loadVector(name, &expected)) { TEST_FAIL_MESSAGE("golden file missing"); return; }
-  uint8_t wire[540];
-  const size_t wlen = hdlcFrame(type, payload.data(), payload.size(), wire,
+  uint8_t wire[1040];
+  const size_t wlen = hdlcFrame(payload.data(), payload.size(), wire,
                                 sizeof(wire));
   TEST_ASSERT_EQUAL_UINT32((uint32_t)expected.size(), (uint32_t)wlen);
   if (wlen == expected.size())
@@ -42,20 +45,20 @@ static void checkAgainstGolden(const char* name, uint8_t type,
 }
 
 static void test_p01_empty_data() {
-  checkAgainstGolden("p01_empty_data.txt", 0x01, std::vector<uint8_t>());
+  checkAgainstGolden("p01_empty_data.txt", std::vector<uint8_t>());
 }
 static void test_p02_stuffing() {
-  checkAgainstGolden("p02_stuffing.txt", 0x01,
+  checkAgainstGolden("p02_stuffing.txt",
                      {0x7E, 0x7D, 0x11, 0x22});
 }
 static void test_p04_hello() {
   std::vector<uint8_t> p{'h','e','l','l','o',' ','f','l','r','n','o','d','e'};
-  checkAgainstGolden("p04_hello.txt", 0x01, p);
+  checkAgainstGolden("p04_hello.txt", p);
 }
 static void test_ctrl_stats() {
   // The generator frames the payload WITH the trailing newline.
   std::vector<uint8_t> p{'{','"','c','m','d','"',':','"','s','t','a','t','s','"','}','\n'};
-  checkAgainstGolden("ctrl_stats.txt", 0x02, p);
+  checkAgainstGolden("ctrl_stats.txt", p);
 }
 
 int main() {

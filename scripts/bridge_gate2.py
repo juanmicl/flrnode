@@ -16,15 +16,7 @@ Run with the PlatformIO venv python (it has pyserial):
 import sys, time
 import serial
 
-def crc16_xmodem(data: bytes, crc: int = 0) -> int:
-    for b in data:
-        crc ^= b << 8
-        for _ in range(8):
-            crc = ((crc << 1) ^ 0x1021) if (crc & 0x8000) else (crc << 1)
-            crc &= 0xFFFF
-    return crc
-
-def stuff(b: bytes) -> bytes:
+def escape(b: bytes) -> bytes:
     out = bytearray()
     for x in b:
         if x == 0x7E: out += b"\x7D\x5E"
@@ -32,25 +24,20 @@ def stuff(b: bytes) -> bytes:
         else: out.append(x)
     return bytes(out)
 
-def hdlc_frame(inner_type: int, payload: bytes) -> bytes:
-    body = bytes([inner_type]) + payload
-    fcs = crc16_xmodem(body)
-    body += bytes([fcs & 0xFF, fcs >> 8])
-    return b"\x7E" + stuff(body) + b"\x7E"
+def hdlc_frame(payload: bytes) -> bytes:
+    """RNS wire format: FLAG + escaped payload + FLAG (no FCS, no type)."""
+    return b"\x7E" + escape(payload) + b"\x7E"
 
 class Deframer:
     def __init__(self):
-        self.frames = []   # (type, payload) — gate harness: assert only on valid deliveries
+        self.frames = []   # payloads — gate harness: assert only on valid deliveries
         self._acc = bytearray()
         self._esc = False
     def feed(self, bs):
         for b in bs:
             if b == 0x7E:
-                if len(self._acc) >= 3:
-                    body = bytes(self._acc)
-                    fcs = body[-2] | (body[-1] << 8)
-                    if crc16_xmodem(body[:-2]) == fcs:
-                        self.frames.append((body[0], body[1:-2]))
+                if self._acc:
+                    self.frames.append(bytes(self._acc))
                 self._acc = bytearray(); self._esc = False
             elif b == 0x7D:
                 self._esc = True
@@ -78,16 +65,15 @@ def drain(defr, s):
         defr.feed(s.read(n))
 
 def run_round(src, dst, dsrc, ddst, frames, label, timeout=45):
-    for i, payload in enumerate(frames):
-        src.write(hdlc_frame(0x01, payload))
+    for payload in frames:
+        src.write(hdlc_frame(payload))
     deadline = time.time() + timeout
     while time.time() < deadline:
         drain(dsrc, src); drain(ddst, dst)
-        got = [p for (t, p) in ddst.frames if t == 0x01]
-        if len(got) >= len(frames):
+        if len(ddst.frames) >= len(frames):
             break
         time.sleep(0.05)
-    got = [p for (t, p) in ddst.frames if t == 0x01][:len(frames)]
+    got = ddst.frames[:len(frames)]
     ok = len(got) == len(frames) and all(
         bytes(a) == bytes(b) for a, b in zip(got, frames))
     print(f"[{label}] {len(got)}/{len(frames)} frames, in-order match: {ok}")
@@ -109,11 +95,11 @@ def main():
     ok2, _ = run_round(sb, sa, db, da, frames[:3], "B->A")
     for name, s, d in (("A", sa, da), ("B", sb, db)):
         d.frames.clear()
-        s.write(hdlc_frame(0x02, b'{"cmd":"stats"}'))
+        s.write(hdlc_frame(b'{"cmd":"stats"}'))
         time.sleep(0.5)
         drain(d, s)
-        for t, p in d.frames:
-            if t == 0x02:
+        for p in d.frames:
+            if p.startswith(b'{"stats"'):
                 print(f"stats[{name}]:", p.decode(errors="replace"))
     print("GATE2:", "PASS" if ok1 and ok2 else "FAIL")
     sys.exit(0 if ok1 and ok2 else 1)

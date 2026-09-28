@@ -15,8 +15,10 @@ using ByteSink = void (*)(void*, const uint8_t*, size_t);
 // for one worst-case wire frame plus headroom — a full ring means the
 // host stopped draining; dropped bytes are counted in
 // droppedOutputBytes()).
-// CTRL is request/reply only; the bridge never originates unsolicited
-// wire frames (decision 1).
+// The RNS wire format has NO type byte: CTRL is detected by a content
+// heuristic (payload starts with `{"` and is < 96 B); everything else
+// is DATA for the ARQ layer. CTRL is request/reply only; the bridge
+// never originates unsolicited wire frames (decision 1).
 class BridgeApp {
  public:
   // Context: setup. Blocking: never.
@@ -33,9 +35,8 @@ class BridgeApp {
  private:
   static void onRadio_(void* ctx, const uint8_t* d, size_t n, int16_t);
   static void onDelivered_(void* ctx, const uint8_t* d, size_t n);
-  static void onSerialFrame_(void* ctx, uint8_t type, const uint8_t* p,
-                             size_t n);
-  void emitFrame_(uint8_t innerType, const uint8_t* payload, size_t n);
+  static void onSerialFrame_(void* ctx, const uint8_t* p, size_t n);
+  void emitFrame_(const uint8_t* payload, size_t n);
   void handleCtrl_(const uint8_t* payload, size_t n);
   Transport& t_;
   void* sinkCtx_;

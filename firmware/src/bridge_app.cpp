@@ -15,13 +15,16 @@ void BridgeApp::begin(uint32_t nowMs) {
   t_.onFrame(&BridgeApp::onRadio_, this);
 }
 
-void BridgeApp::onSerialFrame_(void* ctx, uint8_t type, const uint8_t* p,
-                               size_t n) {
+void BridgeApp::onSerialFrame_(void* ctx, const uint8_t* p, size_t n) {
   auto* self = static_cast<BridgeApp*>(ctx);
-  if (type == 0x01) {
-    self->arq_.tx(p, n, self->nowMs_);  // counters carry rejection paths
-  } else if (type == 0x02) {
+  // CTRL detection heuristic (the RNS wire format has no type byte):
+  // a JSON-looking frame (`{"` prefix) at control-message size.
+  // Binary DATA starting with 7B 22 stays DATA unless it is < 96 B —
+  // real RNS frames never open with `{"`.
+  if (n >= 2 && n < 96 && p[0] == '{' && p[1] == '"') {
     self->handleCtrl_(p, n);
+  } else {
+    self->arq_.tx(p, n, self->nowMs_);  // counters carry rejection paths
   }
 }
 
@@ -32,13 +35,17 @@ void BridgeApp::onRadio_(void* ctx, const uint8_t* d, size_t n, int16_t) {
 
 void BridgeApp::onDelivered_(void* ctx, const uint8_t* d, size_t n) {
   auto* self = static_cast<BridgeApp*>(ctx);
-  self->emitFrame_(0x01, d, n);
+  self->emitFrame_(d, n);
 }
 
 void BridgeApp::handleCtrl_(const uint8_t* payload, size_t n) {
   char buf[64] = {0};
   const size_t c = n < sizeof(buf) - 1 ? n : sizeof(buf) - 1;
   memcpy(buf, payload, c);
+  // One trailing '\n' tolerated and trimmed (requests may arrive
+  // \n-terminated, as in protocol.md's examples).
+  size_t len = c;
+  if (len > 0 && buf[len - 1] == '\n') buf[--len] = '\0';
   // strict section-8 example format, no whitespace tolerance
   if (strstr(buf, "\"cmd\":\"stats\"") != nullptr) {
     const ArqStats& s = arq_.stats();
@@ -56,17 +63,16 @@ void BridgeApp::handleCtrl_(const uint8_t* payload, size_t n) {
         (unsigned long)s.rxDelivered, (unsigned long)s.rxDups,
         (unsigned long)s.rxStale, (unsigned long)s.rxWindowOverflow,
         (unsigned long)s.nakSent, (unsigned long)s.ackSent);
-    emitFrame_(0x02, (const uint8_t*)line, strlen(line));
+    emitFrame_((const uint8_t*)line, strlen(line));
     return;
   }
   const char err[] = "{\"err\":\"unknown_cmd\"}";
-  emitFrame_(0x02, (const uint8_t*)err, sizeof(err) - 1);
+  emitFrame_((const uint8_t*)err, sizeof(err) - 1);
 }
 
-void BridgeApp::emitFrame_(uint8_t innerType, const uint8_t* payload,
-                           size_t n) {
-  uint8_t wire[1060];  // ~1.6 KB transient stack (wire + hdlcFrame body)
-  const size_t w = hdlcFrame(innerType, payload, n, wire, sizeof(wire));
+void BridgeApp::emitFrame_(const uint8_t* payload, size_t n) {
+  uint8_t wire[1060];  // ~1 KB transient stack — fine in the 4 KB loop stack
+  const size_t w = hdlcFrame(payload, n, wire, sizeof(wire));
   if (w == 0) {
     oDropped_ += n;  // oversize for the wire (cannot happen via deframer)
     return;

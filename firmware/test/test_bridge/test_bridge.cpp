@@ -37,28 +37,27 @@ struct Pair {
   void run(uint32_t from, uint32_t to, uint32_t dt = 5) {
     for (uint32_t t = from; t < to; t += dt) step(t);
   }
-  // Decode emitted bytes as HDLC frames. sideB selects the far-end data
-  // output; CTRL replies emerge on the REQUESTING side (local handling).
-  std::vector<std::pair<uint8_t, std::vector<uint8_t>>> decodeOut(
-      bool sideB = true) {
+  // Decode emitted bytes as RNS-format HDLC frames (raw payloads).
+  // sideB selects the far-end data output; CTRL replies emerge on the
+  // REQUESTING side (local handling).
+  std::vector<std::vector<uint8_t>> decodeOut(bool sideB = true) {
     ByteCap& cap = sideB ? b.out : a.out;
-    std::vector<std::pair<uint8_t, std::vector<uint8_t>>> r;
-    struct C { std::vector<std::pair<uint8_t, std::vector<uint8_t>>>* r; } c{&r};
+    std::vector<std::vector<uint8_t>> r;
+    struct C { std::vector<std::vector<uint8_t>>* r; } c{&r};
     flr::HdlcDeframer d;
-    d.begin([](void* ctx, uint8_t ty, const uint8_t* p, size_t n) {
+    d.begin([](void* ctx, const uint8_t* p, size_t n) {
       auto* rr = static_cast<C*>(ctx)->r;
-      rr->emplace_back(ty, std::vector<uint8_t>(p, p + n));
+      rr->emplace_back(p, p + n);
     }, &c);
     for (uint8_t b : cap.bytes) d.feed(b);
     return r;
   }
 };
 
-static void feedHdlc(Pair& p, const uint8_t* payload, size_t n,
-                     uint8_t innerType = 0x01) {
-  std::vector<uint8_t> wire(540);
-  const size_t w = flr::hdlcFrame(innerType, payload, n, wire.data(),
-                                  wire.size());
+static void feedHdlc(Pair& p, const uint8_t* payload, size_t n) {
+  std::vector<uint8_t> wire(1040);
+  const size_t w = flr::hdlcFrame(payload, n, wire.data(), wire.size());
+  TEST_ASSERT_TRUE(w > 0);
   for (size_t i = 0; i < w; ++i) p.a.app.onSerialByte(wire[i], p.curT);
 }
 
@@ -69,9 +68,8 @@ static void test_data_crosses_end_to_end() {
   p.run(0, 80);
   auto frames = p.decodeOut();
   TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)frames.size());
-  TEST_ASSERT_EQUAL_UINT8(0x01, frames[0].first);
-  TEST_ASSERT_EQUAL_UINT32(13, (uint32_t)frames[0].second.size());
-  TEST_ASSERT_EQUAL_UINT8_ARRAY(msg, frames[0].second.data(), 13);
+  TEST_ASSERT_EQUAL_UINT32(13, (uint32_t)frames[0].size());
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(msg, frames[0].data(), 13);
 }
 
 static void test_multi_frame_in_order() {
@@ -85,21 +83,16 @@ static void test_multi_frame_in_order() {
   p.run(0, 300);
   auto frames = p.decodeOut();
   TEST_ASSERT_EQUAL_UINT32(3, (uint32_t)frames.size());
-  TEST_ASSERT_EQUAL_UINT32(5, (uint32_t)frames[0].second.size());
-  TEST_ASSERT_EQUAL_UINT32(300, (uint32_t)frames[1].second.size());
-  TEST_ASSERT_EQUAL_UINT32(5, (uint32_t)frames[2].second.size());
-  TEST_ASSERT_EQUAL_UINT8_ARRAY(f2, frames[1].second.data(), 300);
+  TEST_ASSERT_EQUAL_UINT32(5, (uint32_t)frames[0].size());
+  TEST_ASSERT_EQUAL_UINT32(300, (uint32_t)frames[1].size());
+  TEST_ASSERT_EQUAL_UINT32(5, (uint32_t)frames[2].size());
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(f2, frames[1].data(), 300);
 }
 
-static void test_ctrl_stats_reply_has_14_keys() {
-  Pair p; p.init();
-  const uint8_t cmd[16] = {'{','"','c','m','d','"',':','"','s','t','a','t','s','"','}','\n'};
-  feedHdlc(p, cmd, sizeof(cmd), 0x02);
-  p.run(0, 40);
+static void checkStatsReply(Pair& p) {
   auto frames = p.decodeOut(false);   // CTRL reply: requesting side
   TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)frames.size());
-  TEST_ASSERT_EQUAL_UINT8(0x02, frames[0].first);
-  std::string s(frames[0].second.begin(), frames[0].second.end());
+  std::string s(frames[0].begin(), frames[0].end());
   const char* keys[14] = {"tx_frames","tx_frags","tx_retries","tx_dropped",
     "tx_too_big","tx_window_overflow","meta_conflict","rx_frags",
     "rx_delivered","rx_dups","rx_stale","rx_window_overflow",
@@ -109,31 +102,64 @@ static void test_ctrl_stats_reply_has_14_keys() {
   TEST_ASSERT_TRUE(s.find("{\"stats\":{") == 0);
 }
 
+static void test_ctrl_stats_reply_has_14_keys() {
+  Pair p; p.init();
+  const uint8_t cmd[15] = {'{','"','c','m','d','"',':','"','s','t','a','t','s','"','}'};
+  feedHdlc(p, cmd, sizeof(cmd));      // no trailing '\n'
+  p.run(0, 40);
+  checkStatsReply(p);
+}
+
+static void test_ctrl_stats_with_trailing_newline() {
+  Pair p; p.init();
+  const uint8_t cmd[16] = {'{','"','c','m','d','"',':','"','s','t','a','t','s','"','}','\n'};
+  feedHdlc(p, cmd, sizeof(cmd));      // '\n'-terminated request form
+  p.run(0, 40);
+  checkStatsReply(p);
+}
+
 static void test_ctrl_unknown_err() {
   Pair p; p.init();
   const uint8_t cmd[14] = {'{','"','c','m','d','"',':','"','b','o','g','u','s','}'};
-  feedHdlc(p, cmd, sizeof(cmd), 0x02);
+  feedHdlc(p, cmd, sizeof(cmd));
   p.run(0, 40);
   auto frames = p.decodeOut(false);   // CTRL reply: requesting side
   TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)frames.size());
-  TEST_ASSERT_EQUAL_UINT8(0x02, frames[0].first);
-  std::string s(frames[0].second.begin(), frames[0].second.end());
+  std::string s(frames[0].begin(), frames[0].end());
   TEST_ASSERT_TRUE(s.find("unknown_cmd") != std::string::npos);
 }
 
-static void test_oversize_data_dropped_by_deframer() {
+static void test_binary_jsonlike_data_is_not_ctrl() {
+  // A 96-byte binary payload opening with { " is DATA (heuristic upper
+  // bound): it must CROSS via ARQ, not be answered locally.
   Pair p; p.init();
-  static uint8_t big[513];
-  feedHdlc(p, big, sizeof(big));        // deframer cap: resync, no frame
+  static uint8_t big[96];
+  big[0] = '{'; big[1] = '"';
+  for (int i = 2; i < 96; ++i) big[i] = (uint8_t)(i * 5);
+  feedHdlc(p, big, sizeof(big));
+  p.run(0, 200);
+  auto frames = p.decodeOut();        // far end: crossed as DATA
+  TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)frames.size());
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(big, frames[0].data(), 96);
+  TEST_ASSERT_EQUAL_UINT32(0, (uint32_t)p.decodeOut(false).size());
+}
+
+static void test_oversize_data_rejected() {
+  Pair p; p.init();
+  std::vector<uint8_t> wire;
+  wire.push_back(0x7E);
+  for (int i = 0; i < 513; ++i) wire.push_back(0x55);
+  wire.push_back(0x7E);               // 513 B payload: L3 too big
+  for (uint8_t b : wire) p.a.app.onSerialByte(b, p.curT);
   p.run(0, 60);
   auto frames = p.decodeOut();
-  TEST_ASSERT_EQUAL_UINT32(0, (uint32_t)frames.size());
+  TEST_ASSERT_EQUAL_UINT32(0, (uint32_t)frames.size());  // rejected, no crossing
 }
 
 static void test_output_chunking() {
   Pair p; p.init();
   static uint8_t f[flr::L3_MAX];
-  feedHdlc(p, f, flr::L3_MAX);          // ~1030 B stuffed wire frame
+  feedHdlc(p, f, flr::L3_MAX);          // up to ~1030 B stuffed wire frame
   p.step(1);                            // crossing + reassembly + delivery
   size_t b0 = p.b.out.bytes.size();
   p.step(2);                            // first drain tick: <=256 B out
@@ -143,7 +169,7 @@ static void test_output_chunking() {
   p.run(3, 40);                         // drains over several ticks
   auto frames = p.decodeOut();
   TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)frames.size());
-  TEST_ASSERT_EQUAL_UINT32(512, (uint32_t)frames[0].second.size());
+  TEST_ASSERT_EQUAL_UINT32(512, (uint32_t)frames[0].size());
 }
 
 static void test_lossy_recovery_through_bridge() {
@@ -155,7 +181,7 @@ static void test_lossy_recovery_through_bridge() {
   p.run(0, 2000);
   auto frames = p.decodeOut();
   TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)frames.size());
-  TEST_ASSERT_EQUAL_UINT8_ARRAY(f, frames[0].second.data(), 400);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(f, frames[0].data(), 400);
 }
 
 int main() {
@@ -163,8 +189,10 @@ int main() {
   RUN_TEST(test_data_crosses_end_to_end);
   RUN_TEST(test_multi_frame_in_order);
   RUN_TEST(test_ctrl_stats_reply_has_14_keys);
+  RUN_TEST(test_ctrl_stats_with_trailing_newline);
   RUN_TEST(test_ctrl_unknown_err);
-  RUN_TEST(test_oversize_data_dropped_by_deframer);
+  RUN_TEST(test_binary_jsonlike_data_is_not_ctrl);
+  RUN_TEST(test_oversize_data_rejected);
   RUN_TEST(test_output_chunking);
   RUN_TEST(test_lossy_recovery_through_bridge);
   return UNITY_END();
