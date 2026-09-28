@@ -20,9 +20,12 @@ One-time provisioning per Pi (two boards: flrnode-1, flrnode-2).
 ## Configure the SerialInterface
 
     mkdir -p ~/.reticulum
-    cp host/reticulum.conf.example ~/.reticulum/reticulum.conf
+    cp host/reticulum.conf.example ~/.reticulum/config
 
-Edit `serial_port` to the by-id path of the attached D1 mini:
+NOTE: current RNS (2025-12 images) reads a file named `config` (no
+extension) inside the config directory — not `reticulum.conf`.
+
+Edit `port` to the by-id path of the attached D1 mini:
 
     ls /dev/serial/by-id/
 
