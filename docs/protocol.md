@@ -23,8 +23,9 @@ This document is self-contained. Implement from this spec only.
 ```
 
 Threat model: confidentiality/authenticity are provided by upper layers
-(Reticulum E2E crypto; ESP-NOW CCMP at L1). This protocol provides framing
-integrity (CRC-16) and delivery reliability only. Do NOT add crypto here.
+(Reticulum E2E crypto; ESP-NOW CCMP at L1). This protocol provides
+delivery reliability only (serial framing carries NO integrity check —
+RNS frames are self-protecting end-to-end). Do NOT add crypto here.
 
 ---
 
@@ -32,28 +33,38 @@ integrity (CRC-16) and delivery reliability only. Do NOT add crypto here.
 
 Serial: 921600 baud, 8N1, no flow control.
 
-A serial frame carries a 1-byte **inner type** followed by a payload:
+Serial framing is EXACTLY RNS's simplified HDLC (RNS/Interfaces/
+SerialInterface.py, HDLC class). A frame carries a raw payload:
 
-| Inner type | Name  | Payload                             |
-|-----------:|-------|-------------------------------------|
-| 0x01       | DATA  | 0-512 bytes (RNS frame / frag)      |
-| 0x02       | CTRL  | one JSON line, `\n`-terminated (§8) |
+| Payload | Content                                     |
+|---------|---------------------------------------------|
+| 0-512 B | RNS frame, RNS fragment, or CTRL JSON (§8)  |
+
+There is NO inner type byte and NO FCS. Integrity is RNS's own
+(end-to-end); link reliability is the ARQ layer (§3-§6).
 
 ### 2.1 Framing rules
 
-1. Frame on air/wire = `FLAG, [TYPE, PAYLOAD…], FCS_LO, FCS_HI, FLAG`
-2. FLAG = 0x7E. Octet stuffing: 0x7E→`7D 5E`, 0x7D→`7D 5D`.
-   Stuffing applies to TYPE, PAYLOAD **and FCS bytes**.
-3. FCS = CRC-16/XMODEM over the *unstuffed* `TYPE‖PAYLOAD`.
-   - poly 0x1021, init 0x0000, refin=false, refout=false, xorout=0x0000
-   - validation vector: ASCII `"123456789"` → CRC `0x31C3`
-   - byte order on the wire: FCS_LO first, then FCS_HI (little-endian
-     order), MSB first *within* each byte per UART. FCS bytes are subject
-     to stuffing like any other.
-4. Max stuffed frame on serial: 532 B unstuffed + stuffing + 2 FLAG.
-5. RX: byte equal to FLAG inside a frame (impossible if TX compliant)
-   MUST resync: discard partial frame, `rx_resync++`.
+1. Frame on wire = `FLAG, escaped(PAYLOAD…), FLAG`
+2. FLAG = 0x7E. ESC = 0x7D, ESC_MASK = 0x20: on the wire
+   0x7E→`7D 5E`, 0x7D→`7D 5D`. Escaping applies to the whole payload.
+3. Payload 0-512 B. A 0-length payload frame (FLAG FLAG) is not a
+   frame on receive: the deframer delivers only non-empty runs.
+4. Max stuffed frame on serial: 1026 B (fully-stuffed 512 B payload
+   + 2 FLAG). Deframer accumulator cap: 515 B unstuffed.
+5. RX: any non-empty unescaped run between flags is delivered as-is
+   (corruption is undetectable at this layer — that is inherent to
+   RNS's format). A FLAG inside a frame (impossible if TX compliant)
+   resyncs: discard partial run, `rx_resync++`. Invalid escape
+   (0x7D followed by neither 0x5E nor 0x5D): raw byte kept, one
+   resync counted. Oversize run: chunked drop, one resync per chunk.
 6. Inter-frame silence has no semantic. Back-to-back frames allowed.
+
+Amendment (bench-discovered at gate 3, 2026-09-28): the pre-bench
+spec assumed `[TYPE, PAYLOAD, FCS_LO, FCS_HI]` with CRC-16/XMODEM —
+RNS's actual SerialInterface uses NONE of that. The CRC check dropped
+every real RNS frame, and the appended type+FCS bytes corrupted RNS's
+parser. The wire format is byte-for-byte RNS's from this amendment on.
 
 ---
 
@@ -236,7 +247,10 @@ meta) ≈ 4.4 KB. Acceptable on ESP8266. Document actuals in code comments.
 
 ## 8. CTRL channel (JSON lines)
 
-Both directions. Requests end with `\n`. Example pairs:
+Both directions, carried as plain serial frames (§2 — no type byte on
+the wire). Requests are detected by a content heuristic: payload starts
+with `{"` and is < 96 B; one trailing `\n` is tolerated and trimmed.
+Replies are framed identically. Example pairs:
 
 ```
 → {"cmd":"stats"}                        ← {"stats":{"tx_frames":123,…}}
@@ -258,8 +272,8 @@ On-air CTRL (ftype=3) uses the same schema minus `\n`, max 110 B.
 | ID  | Scenario                                              | Expectation |
 |-----|-------------------------------------------------------|-------------|
 | P-01| HDLC roundtrip, empty DATA payload                    | byte-exact vs golden |
-| P-02| Stuffing: payload `7E 7D 11 22`                       | wire `7E 01 7D 5E 7D 5D 11 22 FCS 7E` (FCS from generator) |
-| P-03| CRC corruption (1 bit flipped in payload)              | frame dropped, `rx_crc_fail++` |
+| P-02| Stuffing: payload `7E 7D 11 22`                        | wire `7E 7D 5E 7D 5D 11 22 7E` (byte-exact vs golden) |
+| P-03| Corruption (any bit flip in payload)                   | NOT detectable at L3 (no FCS — RNS format); frame delivered as-is; RNS E2E integrity is the catcher |
 | P-04| Single-fragment frame, happy path                      | delivered, ACK advances |
 | P-05| 5-fragment frame, reverse order                        | delivered via NAK + reorder |
 | P-06| Duplicate fragment                                     | idempotent, re-ACK, `rx_dups++` |
@@ -287,19 +301,12 @@ emitted `.txt` files. Tests MUST load these, never hand-type CRCs.
 
 ```python
 #!/usr/bin/env python3
-"""Generate FLRNode golden vectors. Output: one .txt per case, lines of
-hex bytes with comments."""
+"""Generate FLRNode golden vectors (RNS wire format: FLAG + escaped
+payload + FLAG, no FCS, no type byte). Output: one .txt per case, lines
+of hex bytes with comments."""
 import pathlib
 
-def crc16_xmodem(data: bytes, crc: int = 0x0000) -> int:
-    for b in data:
-        crc ^= b << 8
-        for _ in range(8):
-            crc = ((crc << 1) ^ 0x1021) if (crc & 0x8000) else (crc << 1)
-            crc &= 0xFFFF
-    return crc
-
-def stuff(b: bytes) -> bytes:
+def escape(b: bytes) -> bytes:
     out = bytearray()
     for x in b:
         if x == 0x7E: out += b"\x7D\x5E"
@@ -307,25 +314,39 @@ def stuff(b: bytes) -> bytes:
         else: out.append(x)
     return bytes(out)
 
-def hdlc(inner_type: int, payload: bytes) -> bytes:
-    body = bytes([inner_type]) + payload
-    fcs = crc16_xmodem(body)
-    body += bytes([fcs & 0xFF, fcs >> 8])   # FCS_LO, FCS_HI
-    return b"\x7E" + stuff(body) + b"\x7E"
+def unescape(b: bytes) -> bytes:
+    out = bytearray()
+    esc = False
+    for x in b:
+        if esc:
+            out.append({0x5E: 0x7E, 0x5D: 0x7D}.get(x, x))
+            esc = False
+        elif x == 0x7D:
+            esc = True
+        else:
+            out.append(x)
+    return bytes(out)
+
+def hdlc(payload: bytes) -> bytes:
+    return b"\x7E" + escape(payload) + b"\x7E"
 
 OUT = pathlib.Path(__file__).parent
 cases = {
-    "p01_empty_data":   hdlc(0x01, b""),
-    "p02_stuffing":     hdlc(0x01, b"\x7E\x7D\x11\x22"),
-    "p04_hello":        hdlc(0x01, b"hello flrnode"),
-    "ctrl_stats":       hdlc(0x02, b'{"cmd":"stats"}\n'),
+    "p01_empty_data":   hdlc(b""),
+    "p02_stuffing":     hdlc(b"\x7E\x7D\x11\x22"),
+    "p04_hello":        hdlc(b"hello flrnode"),
+    "ctrl_stats":       hdlc(b'{"cmd":"stats"}\n'),
 }
 for name, wire in cases.items():
     lines = [f"# {name}"] + [f"{b:02X}" for b in wire]
     (OUT / f"{name}.txt").write_text("\n".join(lines) + "\n")
 
-# self-check: known CRC test vector
-assert crc16_xmodem(b"123456789") == 0x31C3
+# self-check: decoded roundtrip == input for every case (and the
+# escape map: 7D 5E -> 7E, 7D 5D -> 7D)
+for payload in (b"", b"\x7E\x7D\x11\x22", b"hello flrnode",
+                b'{"cmd":"stats"}\n'):
+    assert unescape(escape(payload)) == payload
+assert unescape(b"\x7D\x5E\x7D\x5D") == b"\x7E\x7D"
 print("golden vectors written")
 ```
 
