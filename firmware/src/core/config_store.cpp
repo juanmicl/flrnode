@@ -4,12 +4,17 @@
 namespace flr {
 
 void ConfigStore::save(const Config& c, uint8_t out[kImage]) {
+  // Layout: [magic:1][channel:1][power:1][period:2][pmk:16][reserved:1]
+  // [checksum:2]. Every byte is written — the checksum covers bytes
+  // 0..21 including the reserved one, so save() must clear it first
+  // or images depend on the caller's buffer contents.
   out[0] = kMagic;
   out[1] = c.channel;
   out[2] = c.txPower;
   out[3] = (uint8_t)(c.statsPeriod >> 8);
   out[4] = (uint8_t)c.statsPeriod;
   for (int i = 0; i < 16; ++i) out[5 + i] = c.pmk[i];
+  out[kImage - 3] = 0;  // reserved (checksumed)
   uint16_t sum = 0;
   for (size_t i = 0; i < kImage - 2; ++i) sum = (uint16_t)(sum + out[i]);
   out[kImage - 2] = (uint8_t)(sum >> 8);

@@ -20,7 +20,10 @@ class ConfigStore {
   static constexpr uint8_t kMaxPower = 17;      // dBm conducted
   static constexpr uint8_t kMinChannel = 1, kMaxChannel = 13;
 
-  // Serialise into out[kImage]. Context: any. Blocking: O(1). Failure: none.
+  // Serialise the image layout [magic:1][channel:1][power:1][period:2]
+  // [pmk:16][reserved:1][checksum:2] into out[kImage]; writes ALL 24
+  // bytes (deterministic output). Context: any. Blocking: O(1).
+  // Failure: none.
   void save(const Config& c, uint8_t out[kImage]);
 
   // Parse + clamp. Context: any. Blocking: O(1). Failure: false on

@@ -70,6 +70,28 @@ static void test_short_input_defaults() {
   TEST_ASSERT_EQUAL_UINT8(17, out.txPower);
 }
 
+static void test_save_is_deterministic() {
+  ConfigStore s;
+  Config in;
+  in.channel = 6;
+  uint8_t a[24], b[24];
+  // poison both buffers differently so uninitialised bytes would show
+  memset(a, 0xAA, sizeof(a)); memset(b, 0x55, sizeof(b));
+  s.save(in, a); s.save(in, b);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(a, b, 24);
+}
+
+static void test_stats_period_clamp_to_default() {
+  ConfigStore s;
+  Config in;
+  in.statsPeriod = 7200;   // > 3600 -> default 5
+  uint8_t img[24];
+  s.save(in, img);
+  Config out;
+  TEST_ASSERT_TRUE(s.load(img, sizeof(img), &out));
+  TEST_ASSERT_EQUAL_UINT16(5, out.statsPeriod);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_defaults_match_spec);
@@ -78,5 +100,7 @@ int main() {
   RUN_TEST(test_corrupt_magic_defaults);
   RUN_TEST(test_corrupt_checksum_defaults);
   RUN_TEST(test_short_input_defaults);
+  RUN_TEST(test_save_is_deterministic);
+  RUN_TEST(test_stats_period_clamp_to_default);
   return UNITY_END();
 }
