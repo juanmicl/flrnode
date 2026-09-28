@@ -44,6 +44,7 @@ void setup() {
   }
   char own[13], peer[13];
   macHex(ownMac, own);
+  s_bridge.setNodeId(ownMac);  // node identity for get node_id
   macHex(transport.peerMac(), peer);
   char boot[160];
   snprintf(boot, sizeof(boot),

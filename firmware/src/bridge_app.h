@@ -39,6 +39,9 @@ class BridgeApp {
   // Seed the live config (main loads EEPROM once at boot).
   // Context: setup, before serving requests. Blocking: never.
   void setConfig(const Config& c) { cfg_ = c; }
+  // Store the node identity (own MAC) for get node_id replies (upper-case
+  // hex on the wire). Context: setup. Blocking: never.
+  void setNodeId(const uint8_t mac[6]);
   // The live config; get/set mutations land here (main wiring owns
   // persistence via onConfigPersist). Context: pump/loop. Blocking: O(1).
   const Config& config() const { return cfg_; }
@@ -57,6 +60,7 @@ class BridgeApp {
   ArqSession arq_;
   HdlcDeframer def_;
   Config cfg_{};
+  uint8_t nodeId_[6] = {0};
   void (*persistCb_)(const Config&, void*) = nullptr;
   void* persistCtx_ = nullptr;
   uint32_t nowMs_ = 0;

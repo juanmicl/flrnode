@@ -1,4 +1,5 @@
 #include <unity.h>
+#include <string.h>
 #include <string>
 #include <vector>
 #include "../mock_transport.h"
@@ -285,6 +286,81 @@ static void test_classifier_rejects_binary_ish_prefix() {
   TEST_ASSERT_EQUAL_UINT8('{', frames[0][0]);
 }
 
+// ---- Review-fix wave 1: full-length pmk, effective values, validation ----
+
+static void feedCtrlStr(Pair& p, const char* cmd) {
+  feedCtrlRaw(p, (const uint8_t*)cmd, strlen(cmd));
+}
+
+static void test_ctrl_full_length_pmk_set_ok() {
+  Pair p; p.init();
+  feedCtrlStr(p,
+      "{\"cmd\":\"set\",\"key\":\"pmk\",\"val\":"
+      "\"00112233445566778899AABBCCDDEEFF\"}");   // 66 B: truncation killer
+  p.run(0, 40);
+  auto frames = p.decodeOut(p.a);
+  TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)frames.size());
+  std::string s(frames[0].begin(), frames[0].end());
+  TEST_ASSERT_TRUE(s.find("\"ok\":true") != std::string::npos);
+  const uint8_t expect[16] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+      0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(expect, p.a.app.config().pmk, 16);
+}
+
+static void test_ctrl_full_length_pmk_malformed() {
+  Pair p; p.init();
+  feedCtrlStr(p,
+      "{\"cmd\":\"set\",\"key\":\"pmk\",\"val\":"
+      "\"00112233445566778899AABBCCDDEEFG\"}");   // 32 chars, 'G' not hex
+  feedCtrlStr(p,
+      "{\"cmd\":\"set\",\"key\":\"pmk\",\"val\":"
+      "\"00112233445566778899AABBCCDDEEF\"}");    // 31 hex chars
+  p.run(0, 60);
+  auto frames = p.decodeOut(p.a);
+  TEST_ASSERT_EQUAL_UINT32(2, (uint32_t)frames.size());
+  for (int i = 0; i < 2; ++i) {
+    std::string s(frames[i].begin(), frames[i].end());
+    TEST_ASSERT_TRUE(s.find("\"err\":\"bad_value\"") != std::string::npos);
+  }
+}
+
+static void test_ctrl_tx_power_effective_value() {
+  Pair p; p.init();
+  feedCtrlStr(p, "{\"cmd\":\"set\",\"key\":\"tx_power\",\"val\":30}");
+  p.run(0, 40);
+  auto frames = p.decodeOut(p.a);
+  std::string s(frames[0].begin(), frames[0].end());
+  TEST_ASSERT_TRUE(s.find("\"ok\":true") != std::string::npos);
+  TEST_ASSERT_TRUE(s.find("\"effective\":17") != std::string::npos);
+}
+
+static void test_ctrl_val_form_validation() {
+  Pair p; p.init();
+  feedCtrlStr(p, "{\"cmd\":\"set\",\"key\":\"tx_power\",\"val\":abc}");
+  feedCtrlStr(p, "{\"cmd\":\"set\",\"key\":\"channel\",\"val\":6x}");
+  p.run(0, 60);
+  auto frames = p.decodeOut(p.a);
+  TEST_ASSERT_EQUAL_UINT32(2, (uint32_t)frames.size());
+  for (int i = 0; i < 2; ++i) {
+    std::string s(frames[i].begin(), frames[i].end());
+    TEST_ASSERT_TRUE(s.find("\"err\":\"bad_value\"") != std::string::npos);
+  }
+  TEST_ASSERT_EQUAL_UINT8(17, p.a.app.config().txPower);  // unchanged
+  TEST_ASSERT_EQUAL_UINT8(1, p.a.app.config().channel);   // unchanged
+}
+
+static void test_ctrl_get_node_id() {
+  Pair p; p.init();
+  const uint8_t mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+  p.a.app.setNodeId(mac);
+  feedCtrlStr(p, "{\"cmd\":\"get\",\"key\":\"node_id\"}");
+  p.run(0, 40);
+  auto frames = p.decodeOut(p.a);
+  TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)frames.size());
+  std::string s(frames[0].begin(), frames[0].end());
+  TEST_ASSERT_TRUE(s.find("{\"node_id\":\"AABBCCDDEEFF\"}") == 0);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_data_crosses_end_to_end);
@@ -302,5 +378,10 @@ int main() {
   RUN_TEST(test_ctrl_pmk_write_only_and_rate);
   RUN_TEST(test_ctrl_unknown_key);
   RUN_TEST(test_classifier_rejects_binary_ish_prefix);
+  RUN_TEST(test_ctrl_full_length_pmk_set_ok);
+  RUN_TEST(test_ctrl_full_length_pmk_malformed);
+  RUN_TEST(test_ctrl_tx_power_effective_value);
+  RUN_TEST(test_ctrl_val_form_validation);
+  RUN_TEST(test_ctrl_get_node_id);
   return UNITY_END();
 }

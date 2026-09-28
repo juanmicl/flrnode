@@ -1,4 +1,5 @@
 #include "bridge_app.h"
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -48,7 +49,9 @@ void BridgeApp::onDelivered_(void* ctx, const uint8_t* d, size_t n) {
 }
 
 void BridgeApp::handleCtrl_(const uint8_t* payload, size_t n) {
-  char buf[64] = {0};
+  // 96 B bound: the CTRL heuristic admits n < 96, and a full pmk set is
+  // 66 B — 64 truncated those to guaranteed bad_value.
+  char buf[96] = {0};
   const size_t c = n < sizeof(buf) - 1 ? n : sizeof(buf) - 1;
   memcpy(buf, payload, c);
   // One trailing '\n' tolerated and trimmed (requests may arrive
@@ -94,6 +97,20 @@ void BridgeApp::replyRaw_(const char* s) {
   emitFrame_((const uint8_t*)s, strlen(s));
 }
 
+void BridgeApp::setNodeId(const uint8_t mac[6]) {
+  memcpy(nodeId_, mac, 6);
+}
+
+// Strict numeric token: strtol must consume something AND stop at the
+// payload end (the bounded copy's NUL or the JSON closing brace).
+static bool parseNum(const char* v, long* out) {
+  char* end = nullptr;
+  const long val = strtol(v, &end, 10);
+  if (end == v || (*end != '\0' && *end != '}')) return false;
+  *out = val;
+  return true;
+}
+
 void BridgeApp::handleGetSet_(const char* buf) {
   // Extract "key":"<name>" from the bounded, strict-format copy.
   const char* k = strstr(buf, "\"key\":\"");
@@ -126,47 +143,70 @@ void BridgeApp::handleGetSet_(const char* buf) {
       replyRaw_("{\"err\":\"write_only\"}");
     } else if (strcmp(key, "rate") == 0) {
       replyRaw_("{\"err\":\"unsupported_transport\"}");
+    } else if (strcmp(key, "node_id") == 0) {
+      char r[40];
+      snprintf(r, sizeof(r), "{\"node_id\":\"%02X%02X%02X%02X%02X%02X\"}",
+               nodeId_[0], nodeId_[1], nodeId_[2],
+               nodeId_[3], nodeId_[4], nodeId_[5]);
+      replyRaw_(r);
     } else {
       replyRaw_("{\"err\":\"unknown_key\"}");
     }
     return;
   }
-  // SET: "val":<num> or "val":"<32 hex chars>".
+  // SET: "val":<num> or "val":"<32 hex chars>". Malformed FORM is always
+  // bad_value with the config untouched; successful numeric sets reply
+  // with the effective (post-clamp) value.
   const char* v = strstr(buf, "\"val\":");
   if (v == nullptr) { replyRaw_("{\"err\":\"bad_value\"}"); return; }
   v += 6;
+  long eff = 0;
   if (strcmp(key, "channel") == 0) {
-    // Regulatory domain is a HARD boundary: reject, never wrap around.
-    const long val = strtol(v, nullptr, 10);
-    if (val < ConfigStore::kMinChannel || val > ConfigStore::kMaxChannel) {
+    long val;
+    if (!parseNum(v, &val) || val < ConfigStore::kMinChannel ||
+        val > ConfigStore::kMaxChannel) {
+      // Regulatory domain is a HARD boundary: reject, never wrap.
       replyRaw_("{\"err\":\"bad_value\"}");
       return;
     }
     cfg_.channel = (uint8_t)val;
+    eff = val;
   } else if (strcmp(key, "tx_power") == 0) {
+    long val;
+    if (!parseNum(v, &val)) { replyRaw_("{\"err\":\"bad_value\"}"); return; }
     // EIRP cap clamps DOWN, never rejects (compliance, never above 17).
-    long val = strtol(v, nullptr, 10);
     if (val < 0) val = 0;
     if (val > ConfigStore::kMaxPower) val = ConfigStore::kMaxPower;
     cfg_.txPower = (uint8_t)val;
+    eff = val;
   } else if (strcmp(key, "stats_period") == 0) {
-    long val = strtol(v, nullptr, 10);
+    long val;
+    if (!parseNum(v, &val)) { replyRaw_("{\"err\":\"bad_value\"}"); return; }
     if (val <= 0 || val > 3600) val = 5;  // same default as load()
     cfg_.statsPeriod = (uint16_t)val;
+    eff = val;
   } else if (strcmp(key, "pmk") == 0) {
-    if (v[0] != '"') { replyRaw_("{\"err\":\"bad_value\"}"); return; }
+    if (v[0] != '"') {
+      // Value must be a quoted 32-hex-char run; the loop and the
+      // closing-quote check below reject every other form.
+      replyRaw_("{\"err\":\"bad_value\"}");
+      return;
+    }
     ++v;
-    uint8_t pmk[16];
-    for (int i = 0; i < 16; ++i) {
-      const char hex[3] = {v[2 * i], v[2 * i + 1], '\0'};
-      if (hex[0] == '\0' || hex[1] == '\0') {
+    for (int i = 0; i < 32; ++i) {
+      if (!isxdigit((unsigned char)v[i])) {
         replyRaw_("{\"err\":\"bad_value\"}");
         return;
       }
-      const long byte = strtol(hex, nullptr, 16);
-      pmk[i] = (uint8_t)byte;
     }
-    memcpy(cfg_.pmk, pmk, 16);
+    if (v[32] != '"') { replyRaw_("{\"err\":\"bad_value\"}"); return; }
+    for (int i = 0; i < 16; ++i) {
+      const char hex[3] = {v[2 * i], v[2 * i + 1], '\0'};
+      cfg_.pmk[i] = (uint8_t)strtol(hex, nullptr, 16);
+    }
+    replyRaw_("{\"ok\":true}");  // bare: the key is a secret, not echoed
+    if (persistCb_) persistCb_(cfg_, persistCtx_);
+    return;
   } else if (strcmp(key, "rate") == 0) {
     replyRaw_("{\"err\":\"unsupported_transport\"}");
     return;
@@ -174,7 +214,9 @@ void BridgeApp::handleGetSet_(const char* buf) {
     replyRaw_("{\"err\":\"unknown_key\"}");
     return;
   }
-  replyRaw_("{\"ok\":true}");
+  char r[48];
+  snprintf(r, sizeof(r), "{\"ok\":true,\"effective\":%ld}", eff);
+  replyRaw_(r);
   if (persistCb_) persistCb_(cfg_, persistCtx_);
 }
 
