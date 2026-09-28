@@ -280,7 +280,7 @@ never echoing the key). Valid keys and their semantics:
   compliance cap; see docs/compliance.md); the reply carries the
   effective value. The clamp runs on set AND on boot-load.
 - `stats_period` (seconds): immediate effect, no reboot; 1-3600
-  accepted, 0 or >3600 falls back to 5.
+  accepted, ≤ 0 or >3600 falls back to 5.
 - `rate`: get and set are refused with `unsupported_transport` on the
   ESP-NOW transport (no runtime rate; revisited with the FLRC tier).
 - `node_id`: read-only; get returns the bridge's own MAC as upper-case
@@ -289,11 +289,23 @@ never echoing the key). Valid keys and their semantics:
   the 16-byte key (exactly 32 hex chars). The key transits local USB
   serial in plaintext; physical port access equals key access.
 
+The `stats` reply carries the full 14-key schema — the normative key
+list, inside `{"stats":{…}}`: `tx_frames tx_frags tx_retries tx_dropped
+tx_too_big tx_window_overflow meta_conflict rx_frags rx_delivered
+rx_dups rx_stale rx_window_overflow nak_sent ack_sent`.
+
 Error vocabulary (complete): `unknown_cmd`, `unknown_key`,
 `unsupported_transport`, `write_only`, `bad_value`. A bridge
 receiving `get`/`set` on firmware that predates them replies
 `unknown_cmd` (hosts treat that as "firmware predates config
 support — reflash").
+
+CTRL commands are compact JSON: no whitespace between tokens, ≤ 95
+bytes total, printable ASCII only (0x20-0x7E); a single trailing `\n`
+is tolerated. Spaced forms like `{"cmd": "get", …}` are rejected by
+the bridge (needle matching + classifier) — clients (flrn) must emit
+compact separators and validate the ≤ 95 B bound on outgoing
+commands.
 
 ---
 
