@@ -10,7 +10,7 @@ OldFirmwareError (pre-M3 bridge).
 """
 
 from ..detect import Bridge, fw_version, probe
-from ..link import BridgeLink, LinkError
+from ..link import BridgeLink, LinkError, PortBusyError
 
 REFLASH_CMD = "pio run -e d1_mini_bridge -t upload"
 
@@ -32,12 +32,17 @@ def check_fw(bridge: Bridge) -> None:
             f"m3 or newer — reflash: {REFLASH_CMD}")
 
 
-def _err_to_error(reply: dict, port: str, action: str) -> RuntimeError:
+def _err_to_error(reply: dict, port: str, action: str,
+                  key: str = "") -> RuntimeError:
     """Map a §8 {"err": ...} reply to a local exception."""
     err = reply.get("err", "unknown_cmd")
     if err == "unknown_cmd":
         return OldFirmwareError(
             f"bridge on {port} predates get/set — reflash: {REFLASH_CMD}")
+    if err == "unknown_key":
+        return ConfigError(
+            f"unknown key {key!r} — §8 keys: channel, tx_power, "
+            "stats_period, rate, node_id, pmk")
     if err == "bad_value":
         return ConfigError(
             f"{action} on {port} rejected (bad_value): out of range or "
@@ -50,6 +55,18 @@ def _err_to_error(reply: dict, port: str, action: str) -> RuntimeError:
             f"{action} on {port} unsupported on this transport "
             "(e.g. rate on ESP-NOW)")
     return ConfigError(f"{action} on {port} failed: {err}")
+
+
+def _raise_desync_aware(applied: dict, failed_port: str,
+                        err: Exception) -> None:
+    """Partial apply: the pair is DESYNCED — raise a ConfigError that
+    says so (naming what was applied and what failed) and preserve the
+    original cause. No-op when nothing was applied yet."""
+    if applied:
+        raise ConfigError(
+            f"applied on {', '.join(applied)}; {failed_port} failed — "
+            "the pair is DESYNCED; re-run the same set on both bridges "
+            f"to re-sync. ({err})") from err
 
 
 def validate_set_preconditions(bridges: list[Bridge], key: str, val,
@@ -84,35 +101,51 @@ def cmd_config_get(bridge: Bridge, key: str) -> dict:
     finally:
         link.close()
     if "err" in reply:
-        raise _err_to_error(reply, bridge.port, f"get {key!r}")
+        raise _err_to_error(reply, bridge.port, f"get {key!r}", key=key)
     return reply
 
 
 def cmd_config_set(bridges: list[Bridge], key: str, val, *,
                    force: bool = False, yes: bool = False,
-                   do_reset: bool = True) -> dict:
+                   do_reset: bool | None = None) -> dict:
     """Apply a setting to every bridge in the pinned order — set A, set
     B, then reset A, reset B — and re-probe each, asserting agreement
     (channel equality on the boot lines). Returns
     {"applied": {port: effective}, "reprobe": {port: {...}}}.
 
-    Raises SystemExit (preconditions), OldFirmwareError (fw gate or
-    unknown_cmd), ConfigError (any {"err": ...} reply — after resets,
-    so a partial apply leaves a clear trail), or link errors."""
+    do_reset defaults to key-aware: resets happen for every key EXCEPT
+    stats_period (§8: immediate effect — no reboot, no link drop);
+    pass True/False to override.
+
+    A PARTIAL apply raises ConfigError carrying the desync state —
+    "applied on <ports>; <failed port> failed — the pair is DESYNCED;
+    re-run the same set on both bridges" — with the original cause
+    preserved; resets still run (reset-then-raise). Raises SystemExit
+    (preconditions), OldFirmwareError (fw gate or unknown_cmd),
+    ConfigError, or link errors."""
     validate_set_preconditions(bridges, key, val, force=force, yes=yes)
     for b in bridges:
         check_fw(b)
+    if do_reset is None:
+        do_reset = key != "stats_period"  # §8: stats_period is immediate
 
     opened: list[BridgeLink] = []
     applied: dict = {}
     try:
         for b in bridges:
-            link = BridgeLink(b.port)
-            link.open()
-            opened.append(link)
-            reply = link.ctrl({"cmd": "set", "key": key, "val": val})
+            try:
+                link = BridgeLink(b.port)
+                link.open()
+                opened.append(link)
+                reply = link.ctrl({"cmd": "set", "key": key, "val": val})
+            except (PortBusyError, LinkError, OSError) as e:
+                _raise_desync_aware(applied, b.port, e)
+                raise
             if "err" in reply:
-                raise _err_to_error(reply, b.port, f"set {key}={val!r}")
+                err = _err_to_error(reply, b.port,
+                                    f"set {key}={val!r}", key=key)
+                _raise_desync_aware(applied, b.port, err)
+                raise err
             applied[b.port] = reply.get("effective", True)
     finally:
         # Pinned order: every set first, THEN resets in the same order.
