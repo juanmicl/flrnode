@@ -34,7 +34,8 @@ git clone https://github.com/juanmicl/flrnode && cd flrnode
 sh scripts/install.sh            # installs flrn (host CLI) + rns, runs flrn setup
 ```
 
-Flash both bridges (firmware/; peer MAC comes from the boot line — see
+Flash both bridges — EACH with the OTHER's MAC as its peer (each boot
+line prints the MAC you need; exact per-board commands in
 `TEST-CHECKLIST.md`):
 
 ```sh

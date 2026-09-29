@@ -42,8 +42,9 @@ git clone https://github.com/juanmicl/flrnode && cd flrnode
 sh scripts/install.sh            # instala flrn (CLI host) + rns, y lanza flrn setup
 ```
 
-Flashea ambos puentes (firmware/; la MAC del par sale en la línea de
-arranque — ver `TEST-CHECKLIST.md`):
+Flashea ambos puentes — CADA uno con la MAC del OTRO como par (la
+línea de arranque de cada uno imprime la MAC que necesitas; los
+comandos exactos por placa están en `TEST-CHECKLIST.md`):
 
 ```sh
 pio run -e d1_mini_bridge -t upload

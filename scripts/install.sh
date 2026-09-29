@@ -58,12 +58,30 @@ else
 fi
 
 # --- rns (Reticulum daemon) -------------------------------------------
-if "$PIPX" list 2>/dev/null | grep -q '^rns$'; then
+# pipx list --short emits "name version" columns (verified on pipx 1.x);
+# take column 1. The long format indents package names and would never
+# match a ^rns$ grep.
+if "$PIPX" list --short 2>/dev/null | awk '{print $1}' | grep -qx 'rns'; then
   echo "rns already installed"
 else
   run "$PIPX" install rns
 fi
 
 run "$PIPX" ensurepath || true
-echo
-echo "done. next: flrn setup   (then rnsd -v; see docs/host-setup.md)"
+
+# --- hand off to the configuration engine ------------------------------
+# Same resolution path the installer used (pipx exposes apps in its bin
+# dir — the directory pipx itself lives in for user installs).
+FLRN_BIN=$(dirname "$PIPX")
+if [ "$DRY_RUN" = "1" ]; then
+  echo "+ $FLRN_BIN/flrn setup   (skipped: --dry-run)"
+  exit 0
+fi
+if [ -x "$FLRN_BIN/flrn" ]; then
+  exec "$FLRN_BIN/flrn" setup
+elif command -v flrn >/dev/null 2>&1; then
+  exec flrn setup
+fi
+echo "flrn installed but not on PATH — run: $PIPX ensurepath"
+echo "(then re-login) and: flrn setup"
+exit 1

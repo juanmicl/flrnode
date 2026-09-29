@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,9 +7,21 @@ name = "flrn"
 version = "0.1.0"
 description = "Host CLI for FLRNode encrypted radio links (Reticulum transport)"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["../../LICENSE"]
 requires-python = ">=3.10"
 dependencies = ["pyserial>=3.5"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "OS :: POSIX :: Linux",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Topic :: Communications :: Ham Radio",
+]
 
 [project.scripts]
 flrn = "flrn.cli:main"
