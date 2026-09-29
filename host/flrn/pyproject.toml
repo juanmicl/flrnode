@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flrn"
+version = "0.1.0"
+description = "FLRNode bridge command line"
+requires-python = ">=3.10"
+dependencies = ["pyserial>=3.5"]
+
+[project.scripts]
+flrn = "flrn.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["flrn*"]
