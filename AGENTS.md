@@ -116,7 +116,8 @@ encryption via esp_now_set_kok (PMK/LMK same as ESP32).
 
 - `flrn` = Python 3.10+, zero deps beyond stdlib + pyserial (keep it
   installable with `pipx install flrn`). Commands: `flrn scan`,
-  `flrn config`, `flrn stats`, `flrn test`, `flrn doctor`.
+  `flrn config`, `flrn stats`, `flrn test`, `flrn doctor`,
+  `flrn setup`.
 - Host installer (`curl -sSL flrnode.sh | sh`): installs rns (`pip install
   rns`), writes a reticulum.conf with the SerialInterface block for the
   detected port, starts rnsd, prints the Sideband next step.

@@ -8,7 +8,8 @@ Living state. Update after each session (AGENTS.md).
       hardware results below)
 - [x] M2 HDLC bridge — CLOSED 2026-09-28, amended acceptance (see
       hardware results below)
-- [ ] M3 flrn CLI + host installer
+- [ ] M3 flrn CLI + host installer — CODE COMPLETE; awaiting gates
+      (TEST-CHECKLIST.md phases; owner twine upload)
 - [ ] M4 FLRC transport + benchmarks
 - [ ] M5 Web flasher + launch
 
@@ -118,3 +119,24 @@ hardware):
   gate 3 on single PC w/ two isolated RNS instances (amendment, rpi-imager
   bug #1439); conf.example + host-setup corrected to RNS 2025-12 format;
   flrpong added to scripts/. M2 CLOSED.
+- 2026-09-28 (M3 build): flrn package + installer + docs via the
+  12-task reviewed plan. link (RNS framing + CTRL client), detect
+  (CH340 sysfs + boot probe), commands (scan/stats/config/test/doctor/
+  setup), cli entry, FakeBridge integration suite. Tasks 1-12 closed
+  at HEAD 71522fa — key commits: 5dc729a link, 39b2ad9 detect,
+  06c37b1 scan/stats, 7d6c53e+a2f81e7 config (+wave), 9cb13fe
+  test/doctor/setup/cli, ca8571e+28c3333 cli waves, b94c814 FakeBridge,
+  ee72a78+51089e3 test waves, 71522fa packaging. Counts: native
+  89/89 in 11 suites (grown from 68), pytest 43/43 (9 link + 1 detect
+  + 2 scan_stats + 5 config + 7 test_doctor + 19 integration), six
+  embedded envs green. Packaging: wheel builds clean, twine PASSED,
+  fresh-venv install smoke OK; README bilingual with quick start.
+  Review adjudications recorded: set replies carry the effective
+  post-clamp value (§8); node_id get plumbed from the boot MAC;
+  client-side channel range check removed — firmware bad_value is the
+  single authority; partial applies raise a DESYNCED error naming
+  applied/failed ports; FakeBridge mirrors the firmware classifier
+  incl. the one-trailing-\n exemption and strict numerics.
+  STOP: the human runs TEST-CHECKLIST.md gates 1-3 (incl. the PMK
+  single-reset persistence discriminator and the owner twine upload)
+  and pastes results here; M3 closes only then.

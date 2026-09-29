@@ -21,3 +21,9 @@ __pycache__/
 .vscode/
 .idea/
 .DS_Store
+
+# --- packaging artifacts (recreated by python -m build) ---
+host/LICENSE
+host/flrn/dist/
+host/flrn/build/
+host/flrn/flrn.egg-info/
