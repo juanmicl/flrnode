@@ -54,10 +54,14 @@ the gate results are pasted.
    `flrn test …` → PASS. **Reset ONE bridge** (either) — link returns:
    `flrn test …` → PASS again (PMK survived in EEPROM on the reset
    side — persistence discriminator).
-8. `flrn doctor` — every row OK (ports attached, fw m3, config valid,
-   topology healthy).
-9. Roll back: `flrn config set channel 1 --all-bridges` (leave the
-   bench on channel 1 for the next session).
+8. `flrn setup` — writes/validates `~/.reticulum/config` (an existing
+    config is kept). Do this before the doctor step: rnsd is stopped
+    during these gates, so the topology row is OK only via a valid
+    config dir.
+9. `flrn doctor` — every row OK (ports attached, fw m3, config valid,
+    topology healthy).
+10. Roll back: `flrn config set channel 1 --all-bridges` (leave the
+    bench on channel 1 for the next session).
 
 ## Gate 3: installer clean-environment run
 
