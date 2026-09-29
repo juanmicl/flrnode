@@ -16,6 +16,8 @@ CONFIG_TEMPLATE = """[reticulum]
   enable_transport = yes
   share_instance = yes
 
+[interfaces]
+
 [[Default Interface]]
   type = SerialInterface
   interface_enabled = yes

@@ -8,11 +8,16 @@ both healthy topologies.
 """
 
 from pathlib import Path
+import getpass
+import grp
+import os
+import pwd
+import re
+import shutil
 
 from ..detect import fw_version, list_ch340_ports, probe
 from ..link import LinkError, LinkTimeout, PortBusyError, port_holder
-
-REFLASH_HINT = "reflash: pio run -e d1_mini_bridge -t upload"
+from .config import REFLASH_CMD
 
 
 def check_config_format(path) -> tuple[bool, str]:
@@ -52,6 +57,37 @@ def run_doctor(config_dir: str = "~/.reticulum") -> list[tuple[str, bool, str]]:
     always carry the fix in detail."""
     checks: list[tuple[str, bool, str]] = []
 
+    # Host prerequisites -------------------------------------------------
+    try:
+        import serial  # noqa: F401
+        checks.append(("pyserial", True, "importable"))
+    except ImportError:
+        checks.append(("pyserial", False,
+                       "not importable — pip install pyserial "
+                       "(or pipx install flrn, which pulls it in)"))
+    if shutil.which("rnsd") is None:
+        checks.append(("rns", False,
+                       "rnsd not on PATH — pipx install rns && pipx "
+                       "ensurepath (then re-login)"))
+    else:
+        checks.append(("rns", True,
+                       f"rnsd at {shutil.which('rnsd')}"))
+    user = getpass.getuser()
+    try:
+        grp_entry = grp.getgrnam("dialout")
+        in_dialout = (user in grp_entry.gr_mem or
+                      pwd.getpwuid(os.getuid()).pw_gid == grp_entry.gr_gid)
+    except KeyError:
+        in_dialout = False
+    if in_dialout:
+        checks.append(("dialout", True, f"{user} is a member"))
+    else:
+        checks.append(("dialout", False,
+                       f"{user} is not in the dialout group — "
+                       "sudo usermod -aG dialout "
+                       f"{user} (then log out/in)"))
+
+    # Bridges ------------------------------------------------------------
     ports = list_ch340_ports()
     checks.append((
         "ch340-ports", bool(ports),
@@ -76,7 +112,7 @@ def run_doctor(config_dir: str = "~/.reticulum") -> list[tuple[str, bool, str]]:
             else:
                 checks.append((f"port {p}", False,
                                f"fw {b.fw} predates config — "
-                               + REFLASH_HINT))
+                               f"reflash: {REFLASH_CMD}"))
         except PortBusyError as e:
             checks.append((f"port {p}", False, e.holder_hint or str(e)))
         except (LinkTimeout, LinkError) as e:
@@ -87,6 +123,27 @@ def run_doctor(config_dir: str = "~/.reticulum") -> list[tuple[str, bool, str]]:
         ok, detail = check_config_format(cfg)
         name = f"config {d.name}"
         checks.append((name, ok, f"{cfg}: {detail}"))
+
+    # Configured port vs attached reality (catches wrong-id/wrong-ttyUSB)
+    primary_cfg = Path(config_dir).expanduser() / "config"
+    configured = None
+    try:
+        m = re.search(r"^port\s*=\s*(\S+)",
+                      primary_cfg.read_text(), re.MULTILINE)
+        configured = m.group(1) if m else None
+    except OSError:
+        pass
+    if configured:
+        attached = list_ch340_ports()
+        if configured in attached:
+            checks.append(("config-port", True,
+                           f"{configured} is attached"))
+        else:
+            checks.append(("config-port", False,
+                           f"config points at {configured} but attached "
+                           f"CH340 ports are: "
+                           f"{', '.join(attached) or 'none'} — fix the "
+                           "port line or replug the bridge"))
 
     serial_dirs = [d for d in _config_dirs(config_dir)
                    if (d / "config").exists()

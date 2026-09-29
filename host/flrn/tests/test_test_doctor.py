@@ -1,3 +1,5 @@
+import pytest
+
 from flrn.commands.test import make_frames, IN_ORDER_SIZES
 
 
@@ -31,3 +33,51 @@ def test_config_format_rejects_old_format(tmp_path):
                    "serial_port = /dev/ttyUSB0\nserial_speed = 921600\n")
     ok, detail = check_config_format(cfg)
     assert not ok and "serial_port" in detail
+
+
+# ---- Review-fix wave 1: setup/doctor roundtrip + spec checks ----
+
+
+def test_setup_writes_config_doctor_accepts(tmp_path, monkeypatch):
+    """setup's template must satisfy doctor's format check (the
+    [interfaces] parent roundtrip)."""
+    import flrn.commands.setup as setup_mod
+    from flrn.detect import Bridge
+
+    monkeypatch.setattr(setup_mod, "list_ch340_ports",
+                        lambda: ["/dev/ttyUSB0"])
+    monkeypatch.setattr(
+        setup_mod, "probe",
+        lambda port: Bridge(port=port, fw="m3", mac="A", peer="B",
+                            channel=1, mode="bridge"))
+    setup_mod.run_setup(assume_yes=True, config_dir=str(tmp_path))
+    from flrn.commands.doctor import check_config_format
+    ok, detail = check_config_format(tmp_path / "config")
+    assert ok, detail
+
+
+def test_doctor_rows_shape_headless(tmp_path, monkeypatch):
+    """run_doctor returns (name, ok, detail) rows for every check,
+    including the spec checks (pyserial/rns/dialout/config-port) —
+    verdicts are host-dependent; shapes are not."""
+    import flrn.commands.doctor as doctor_mod
+
+    monkeypatch.setattr(doctor_mod, "list_ch340_ports", lambda: [])
+    rows = doctor_mod.run_doctor(config_dir=str(tmp_path))
+    names = {n for n, _, _ in rows}
+    for expected in ("pyserial", "rns", "dialout", "ch340-ports",
+                     "topology"):
+        assert expected in names, (expected, names)
+    for n, ok, d in rows:
+        assert isinstance(n, str) and n
+        assert isinstance(ok, bool)
+        assert isinstance(d, str) and d
+
+
+def test_config_get_without_port_is_clean_error():
+    """`flrn config get <key>` without --port: clean SystemExit, not a
+    probe(None) traceback."""
+    from flrn.cli import main
+    with pytest.raises(SystemExit) as e:
+        main(["config", "get", "channel"])
+    assert "--port" in str(e.value)

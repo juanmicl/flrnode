@@ -100,6 +100,9 @@ def main(argv=None) -> int:
             _render_stats(stats_cmd(args.port, watch=args.watch),
                           args.json)
         elif args.cmd == "config":
+            if not args.port:
+                raise SystemExit("pass --port /dev/ttyUSB0 (or use "
+                                 "--all-bridges with `config set`)")
             if args.action == "get":
                 bridge = probe(args.port)
                 print(json.dumps(
