@@ -13,6 +13,7 @@ real port is opened, so hardware-less imports and tests stay clean.
 import json
 import subprocess
 import time
+from typing import Any
 
 FLAG = 0x7E
 ESC = 0x7D
@@ -62,7 +63,11 @@ def deframe(data: bytes) -> list[bytes]:
         if b == FLAG:
             if in_frame and acc:
                 frames.append(bytes(acc))
-            in_frame = not in_frame
+                in_frame = False        # closed a full frame
+            elif not in_frame:
+                in_frame = True         # opened
+            # else: FLAG while open with empty acc = orphan flag (e.g.
+            # a read that began mid-frame); stay open — self-resync.
             acc = bytearray()
             esc = False
         elif in_frame:
@@ -120,7 +125,7 @@ class BridgeLink:
     object (duck-typed read/write/flush) for tests.
     """
 
-    def __init__(self, port: str, baud: int = 921600):
+    def __init__(self, port: str | Any, baud: int = 921600):
         self._port = port
         self._baud = baud
         self._ser = None
@@ -200,6 +205,9 @@ class BridgeLink:
                     d = parse_boot_line(payload)
                     if d is not None:
                         return d
+            # Bound the buffer: DATA-only streams must not grow it
+            # unboundedly; 1 KiB exceeds the ~380 B worst-case stats
+            # reply with headroom — do not shrink below that.
             buf = buf[-1024:]
         raise LinkTimeout(
             "no CTRL reply — rnsd contention or firmware without "
