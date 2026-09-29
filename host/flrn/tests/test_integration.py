@@ -194,3 +194,121 @@ def test_run_link_test_partial_capture_and_scramble():
     r = run_link_test(ports[0], ports[1], n=10, timeout=3)
     assert r["in_order"] is False
     scrambled.stop()
+
+
+# ---- Review-fix wave 1 ----
+
+
+def test_scan_skips_silent_without_abort():
+    """One good bridge + one silent port: scan returns exactly ONE
+    Bridge and does not abort on the dead candidate."""
+    pair = FakeBridgePair(silent=True)
+    silent_port = pair.start()[0]
+    from flrn.commands.scan import scan_bridges
+    from flrn.detect import Bridge
+    good = FakeBridgePair()
+    good_port = good.start()[0]
+    try:
+        found = scan_bridges(ports=[good_port, silent_port])
+        assert len(found) == 1
+        assert isinstance(found[0], Bridge) and found[0].fw == "m3"
+    finally:
+        pair.stop()
+        good.stop()
+
+
+def test_ctrl_newline_tolerance_and_double_newline_data():
+    """§8 one-trailing-\\n form is answered as CTRL; \\n\\n falls through
+    to DATA (crosses to the peer)."""
+    import time
+    from flrn.link import BridgeLink, deframe, frame
+    pair = FakeBridgePair()
+    ports = pair.start()
+    la = BridgeLink(ports[0])
+    lb = BridgeLink(ports[1])
+    la.open()
+    lb.open()
+
+    def framed_reply_within():
+        buf = b""
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            n = getattr(la._ser, "in_waiting", 0)
+            if n:
+                buf += la._ser.read(n)
+            if deframe(buf):
+                return deframe(buf)
+            time.sleep(0.02)
+        return []
+
+    la._ser.write(frame(b'{"cmd":"get","key":"channel"}\n'))
+    assert framed_reply_within() == [b'{"channel":1}']
+
+    def peer_data_within():
+        buf = b""
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            n = getattr(lb._ser, "in_waiting", 0)
+            if n:
+                buf += lb._ser.read(n)
+            if deframe(buf):
+                return deframe(buf)
+            time.sleep(0.02)
+        return []
+
+    la._ser.write(frame(b'{"cmd":"get","key":"channel"}\n\n'))
+    assert peer_data_within() == [b'{"cmd":"get","key":"channel"}\n\n']
+    la.close()
+    lb.close()
+    pair.stop()
+
+
+def test_fake_set_strict_numerics_and_pmk_hex():
+    """The fake mirrors parseNum (whole-token) and isxdigit×32: malformed
+    numerics and non-hex pmk get bad_value; numeric strings parse."""
+    pair = FakeBridgePair()
+    ports = pair.start()
+    from flrn.link import BridgeLink, deframe, frame
+    import time
+    link = BridgeLink(ports[0])
+    link.open()
+
+    def ctrl(raw_req):
+        link._ser.write(frame(raw_req))
+        buf = b""
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            n = getattr(link._ser, "in_waiting", 0)
+            if n:
+                buf += link._ser.read(n)
+            frames = deframe(buf)
+            if frames:
+                return frames[0]
+            time.sleep(0.02)
+        return None
+
+    assert ctrl(b'{"cmd":"set","key":"channel","val":"abc"}') == \
+        b'{"err":"bad_value"}'
+    assert ctrl(b'{"cmd":"set","key":"channel","val":"6x"}') == \
+        b'{"err":"bad_value"}'
+    assert ctrl(b'{"cmd":"set","key":"channel","val":"6"}') == \
+        b'{"ok":true,"effective":6}'          # numeric string parses
+    assert ctrl(b'{"cmd":"set","key":"pmk","val":'
+                b'"zz112233445566778899AABBCCDDEEFF"}') == \
+        b'{"err":"bad_value"}'                 # non-hex charset
+    assert ctrl(b'{"cmd":"set","key":"pmk","val":'
+                b'"00112233445566778899AABBCCDDEEFF"}') == \
+        b'{"ok":true}'
+    link.close()
+    pair.stop()
+
+
+def test_cli_exit_code_fail_class():
+    """main() exit code 1: the fail class (silent bridge -> LinkTimeout)."""
+    import flrn.cli as cli_mod
+    pair = FakeBridgePair(silent=True)
+    port = pair.start()[0]
+    try:
+        assert cli_mod.main(["stats", port]) == 1
+    finally:
+        pair.stop()

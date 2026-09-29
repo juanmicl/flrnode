@@ -165,10 +165,17 @@ class FakeBridge:
         # leftover partial frames stay in _acc
 
     def _handle(self, payload: bytes):
-        # CTRL classifier (§8/M2): printable, small, {"-prefixed
-        if (2 <= len(payload) < 96 and payload[0:1] == b"{"
-                and payload[1:2] == b'"'
-                and all(0x20 <= c <= 0x7E for c in payload)):
+        # CTRL classifier (§8/M2): printable, small, {"-prefixed; ONE
+        # trailing \n is exempt from the printable scan (§8 requests may
+        # arrive \n-terminated; handleCtrl_ trims it) — \n\n is NOT
+        # exempt and falls through to DATA.
+        plen = len(payload)
+        if plen and payload[plen - 1:plen] == b"\n":
+            plen -= 1
+        body = payload[:plen]
+        if (2 <= len(payload) < 96 and body[0:1] == b"{"
+                and body[1:2] == b'"'
+                and all(0x20 <= c <= 0x7E for c in body)):
             self._ctrl(payload)
             return
         self._forward_data(payload)
@@ -190,6 +197,8 @@ class FakeBridge:
 
     # -- CTRL -------------------------------------------------------------
     def _ctrl(self, payload: bytes):
+        if self.opts.get("silent"):
+            return  # fully silent: no boot line AND no CTRL replies
         try:
             req = json.loads(payload.decode())
         except ValueError:
@@ -225,26 +234,51 @@ class FakeBridge:
         reply = replies.get(key, {"err": "unknown_key"})
         self._send_framed(json.dumps(reply, separators=(",", ":")).encode())
 
+    @staticmethod
+    def _parse_num(val):
+        """Mirror the firmware's parseNum: a JSON int, or a string whose
+        digits strtol would FULLY consume ("6" ok; "abc"/"6x" -> None =
+        bad_value). Booleans are not numbers here."""
+        if isinstance(val, bool):
+            return None
+        if isinstance(val, int):
+            return val
+        if isinstance(val, str):
+            s = val.strip()
+            digits = s[1:] if s[:1] in "+-" else s
+            if digits.isdigit():
+                return int(s)
+        return None
+
     def _set(self, key, val):
         if key == "channel":
-            if isinstance(val, int) and 1 <= val <= 13:
-                self.channel = val
-                reply = {"ok": True, "effective": val}
-            else:
+            n = self._parse_num(val)
+            if n is None or not 1 <= n <= 13:
                 reply = {"err": "bad_value"}
+            else:
+                self.channel = n
+                reply = {"ok": True, "effective": n}
         elif key == "tx_power":
-            v = val if isinstance(val, int) else 0
-            v = max(0, min(17, v))
-            self.tx_power = v
-            reply = {"ok": True, "effective": v}
+            n = self._parse_num(val)
+            if n is None:
+                reply = {"err": "bad_value"}
+            else:
+                v = max(0, min(17, n))
+                self.tx_power = v
+                reply = {"ok": True, "effective": v}
         elif key == "stats_period":
-            v = val if isinstance(val, int) else 0
-            if v <= 0 or v > 3600:
-                v = 5
-            self.stats_period = v
-            reply = {"ok": True, "effective": v}
+            n = self._parse_num(val)
+            if n is None:
+                reply = {"err": "bad_value"}
+            else:
+                if n <= 0 or n > 3600:
+                    n = 5
+                self.stats_period = n
+                reply = {"ok": True, "effective": n}
         elif key == "pmk":
-            if (isinstance(val, str) and len(val) == 32):
+            hexdigits = set("0123456789abcdefABCDEF")
+            if (isinstance(val, str) and len(val) == 32
+                    and all(c in hexdigits for c in val)):
                 reply = {"ok": True}
             else:
                 reply = {"err": "bad_value"}
@@ -265,6 +299,7 @@ class FakeBridgePair:
         self.bridges: list[FakeBridge] = []
         self.slave_paths: list[str] = []
         self._masters: list[int] = []
+        self._slaves: list[int] = []
 
     def start(self) -> list[str]:
         shared = {k: v for k, v in self.opts.items()
@@ -272,6 +307,7 @@ class FakeBridgePair:
         for i in range(2):
             m, s = pty.openpty()
             self._masters.append(m)
+            self._slaves.append(s)
             self.slave_paths.append(os.ttyname(s))
             opts = dict(shared)
             if i == 1 and "disagree_channel" in self.opts:
@@ -287,8 +323,8 @@ class FakeBridgePair:
     def stop(self):
         for b in self.bridges:
             b.stop()
-        for m in self._masters:
+        for fd in self._masters + self._slaves:
             try:
-                os.close(m)
+                os.close(fd)
             except OSError:
                 pass
