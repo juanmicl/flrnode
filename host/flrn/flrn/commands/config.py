@@ -83,11 +83,8 @@ def validate_set_preconditions(bridges: list[Bridge], key: str, val,
         raise SystemExit(
             f"setting {key} on ONE bridge desyncs the pair — pass both "
             "bridges or --force")
-    if key == "channel" and (not isinstance(val, int)
-                             or not 1 <= val <= 13):
-        raise SystemExit(
-            f"channel must be an integer in 1-13 (EU band plan), got "
-            f"{val!r}")
+    # channel range is NOT re-validated here: the firmware is the
+    # single authority and answers bad_value (surfaced as ConfigError).
 
 
 def cmd_config_get(bridge: Bridge, key: str) -> dict:

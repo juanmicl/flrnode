@@ -39,19 +39,25 @@ def _stats_period(link: BridgeLink) -> float:
         return 5.0
 
 
-def stats(port: str, watch: bool = False) -> dict:
+def stats(port: str, watch: bool = False,
+          max_polls: int | None = None) -> dict:
     """Fetch the bridge's counters (and print them once per period when
     watch=True, until interrupted). PortBusyError propagates loudly with
     its holder hint; LinkTimeout on a silent bridge. Returns the 14-key
-    dict (single fetch when watch=False)."""
+    dict (single fetch when watch=False). max_polls bounds the watch
+    loop's poll count (test/CI seam; None = unlimited)."""
     link = BridgeLink(port)
     link.open()
     try:
+        polls = 0
         while True:
             d = parse_stats_reply(link.ctrl({"cmd": "stats"}))
             if not watch:
                 return d
             print(json.dumps(d))  # one machine-parseable line per poll
+            polls += 1
+            if max_polls is not None and polls >= max_polls:
+                return d
             period = _stats_period(link)
             time.sleep(max(period, 1.0))
     finally:
