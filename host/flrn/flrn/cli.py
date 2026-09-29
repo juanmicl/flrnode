@@ -100,7 +100,10 @@ def main(argv=None) -> int:
             _render_stats(stats_cmd(args.port, watch=args.watch),
                           args.json)
         elif args.cmd == "config":
-            if not args.port:
+            # `set --all-bridges` legitimately runs without --port;
+            # every other port-less config invocation is an error.
+            if not args.port and not (args.action == "set"
+                                      and args.all_bridges):
                 raise SystemExit("pass --port /dev/ttyUSB0 (or use "
                                  "--all-bridges with `config set`)")
             if args.action == "get":

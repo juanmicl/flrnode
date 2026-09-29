@@ -81,3 +81,28 @@ def test_config_get_without_port_is_clean_error():
     with pytest.raises(SystemExit) as e:
         main(["config", "get", "channel"])
     assert "--port" in str(e.value)
+
+
+def test_config_set_all_bridges_needs_no_port(monkeypatch):
+    """`flrn config set channel 6 --all-bridges` (the gate-3 scripted
+    invocation) must proceed WITHOUT --port and reach the config module
+    with both scanned bridges."""
+    import flrn.cli as cli_mod
+    from flrn.detect import Bridge
+
+    bridges = [Bridge(port="/dev/a", fw="m3", mac="A", peer="B",
+                      channel=1, mode="bridge"),
+               Bridge(port="/dev/b", fw="m3", mac="A", peer="B",
+                      channel=1, mode="bridge")]
+    monkeypatch.setattr(cli_mod, "scan_bridges", lambda: bridges)
+    calls = {}
+
+    def fake_set(bridges_arg, key, val, **kw):
+        calls["args"] = (bridges_arg, key, val, kw)
+        return {"applied": {}, "reprobe": {}}
+
+    monkeypatch.setattr(cli_mod, "cmd_config_set", fake_set)
+    assert cli_mod.main(["config", "set", "channel", "6",
+                         "--all-bridges"]) == 0
+    assert [b.port for b in calls["args"][0]] == ["/dev/a", "/dev/b"]
+    assert calls["args"][1] == "channel" and calls["args"][2] == 6
