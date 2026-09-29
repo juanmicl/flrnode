@@ -5,6 +5,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
 [![PlatformIO](https://img.shields.io/badge/build-PlatformIO-orange?style=for-the-badge)](firmware/)
 
+[README en español](README.es.md)
+
 ## Why
 
 Off-grid options today force a trade-off:
@@ -23,10 +25,43 @@ It does this with two transports on one firmware:
 
 On top of that link runs [Reticulum](https://github.com/markqvist/Reticulum), a cryptography-first mesh networking stack, so you get end-to-end encrypted messaging, file transfer and more, out of the box, with **zero configuration**.
 
+## Quick start
+
+Two WEMOS D1 minis, two hosts (or one host + one Raspberry Pi):
+
+```sh
+git clone https://github.com/juanmicl/flrnode && cd flrnode
+sh scripts/install.sh            # installs flrn (host CLI) + rns, runs flrn setup
+```
+
+Flash both bridges (firmware/; peer MAC comes from the boot line — see
+`TEST-CHECKLIST.md`):
+
+```sh
+pio run -e d1_mini_bridge -t upload
+```
+
+Then:
+
+```sh
+flrn scan                                   # find bridges: fw, mode, channel, MAC
+flrn stats /dev/ttyUSB0                     # live ARQ counters (--watch to poll)
+flrn config set channel 6 --all-bridges     # apply + persist on both bridges
+flrn test /dev/ttyUSB0 /dev/ttyUSB1         # over-air link test + verdict
+flrn doctor                                 # health checks with fixes
+```
+
+Requires: a FLRNode bridge on USB (CH340), Python 3.10+, and `rnsd`
+running on each host (`docs/host-setup.md`).
+*(M5: the one-line `curl -sSL flrnode.sh | sh` installer — today, run
+the script from a checkout.)*
+
 ## Status
 
-Early development. The ESP-NOW transport (M1) is being built right now;
-nothing is user-ready yet. Watch releases, or check the roadmap below.
+M1 (ESP-NOW transport) and M2 (Reticulum bridge) are closed with
+bench-verified results. M3 (`flrn` CLI, this quick start) is
+code-complete with a headless integration suite; M4 brings the FLRC
+tier and published benchmarks.
 
 ## Supported hardware
 
