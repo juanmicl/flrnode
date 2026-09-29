@@ -53,8 +53,8 @@ def frame(payload: bytes) -> bytes:
 
 def deframe(data: bytes) -> list[bytes]:
     """Complete frames in a byte stream; junk outside frames is ignored
-    (flag-opens / flag-closes delimit accumulation, like RNS's own
-    host-side parser)."""
+    (flag-opens / flag-closes delimit accumulation — sound because the
+    bridge emits every frame with its own leading AND trailing flag)."""
     frames: list[bytes] = []
     acc = bytearray()
     in_frame = False
