@@ -1,6 +1,6 @@
 # FLRNode
 
-**El enlace radio cifrado de 1 Mbps para makers: 15 $, 2 km, sin licencia.**
+**El enlace de radio cifrado para makers: 12 $ por nodo, hasta 1 Mbps y 2 km, sin licencia.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/juanmicl/flrnode/ci.yml?style=for-the-badge&label=CI)](https://github.com/juanmicl/flrnode/actions/workflows/ci.yml)
@@ -24,7 +24,7 @@ Lo consigue con dos transportes en un solo firmware:
 
 - **Nivel ESP-NOW (0 $ extra)**: el ESP32 (o incluso un ESP8266 de 5 $)
   que ya tienes en el cajón. ~100-300 m, latencia de milisegundos.
-- **Nivel FLRC (un módulo de 10 $)**: el modo *Fast Long Range
+- **Nivel FLRC (un módulo de 5 $)**: el modo *Fast Long Range
   Communication* del Semtech SX1280, casi olvidado: FSK con FEC turbo
   pensado para carreras de drones. 260/520/1040 kbps, 0,5-2 km. Casi
   nadie lo usa. Nosotros sí.
@@ -83,7 +83,7 @@ en M4/M5.
 | WEMOS D1 mini (ESP8266) | ~5 $ | ESP-NOW | el enlace cifrado más barato que puedes construir |
 | Cualquier ESP32 DevKit | ~7 $ | ESP-NOW (+modo LR) | mejor alcance sin hardware extra |
 | LilyGO T3S3 (SX1280) | ~25 $ | ESP-NOW + FLRC | todo en uno, OLED, batería |
-| ESP32 + módulo SX1280 suelto | ~17 $ | ESP-NOW + FLRC | cableado DIY: SPI + BUSY + DIO1 |
+| ESP32 + módulo SX1280 suelto | ~12 $ | ESP-NOW + FLRC | cableado DIY: SPI + BUSY + DIO1 |
 
 ## Qué construyes con ello
 

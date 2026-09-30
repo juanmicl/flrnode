@@ -1,6 +1,6 @@
 # FLRNode
 
-**The encrypted 1 Mbps radio link for makers: $15, 2 km, no license.**
+**The encrypted radio link for makers: $12 a node, up to 1 Mbps and 2 km, no license.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/juanmicl/flrnode/ci.yml?style=for-the-badge&label=CI)](https://github.com/juanmicl/flrnode/actions/workflows/ci.yml)
@@ -21,7 +21,7 @@ Off-grid options today force a trade-off:
 It does this with two transports on one firmware:
 
 - **ESP-NOW tier ($0 extra)**: the ESP32 (or even a $5 ESP8266) already in your drawer. ~100-300 m, millisecond latency.
-- **FLRC tier (one $10 module)**: Semtech SX1280's almost-forgotten *Fast Long Range Communication* mode, FSK with turbo FEC designed for drone racing. 260/520/1040 kbps, 0.5-2 km. Almost nobody uses it. We do.
+- **FLRC tier (one $5 module)**: Semtech SX1280's almost-forgotten *Fast Long Range Communication* mode, FSK with turbo FEC designed for drone racing. 260/520/1040 kbps, 0.5-2 km. Almost nobody uses it. We do.
 
 On top of that link runs [Reticulum](https://github.com/markqvist/Reticulum), a cryptography-first mesh networking stack, so you get end-to-end encrypted messaging, file transfer and more, out of the box, with **zero configuration**.
 
@@ -74,7 +74,7 @@ point-to-point until multi-peer support lands with M4/M5.
 | WEMOS D1 mini (ESP8266) | ~$5 | ESP-NOW | the cheapest encrypted radio link you can build |
 | Any ESP32 DevKit | ~$7 | ESP-NOW (+LR mode) | best zero-extra-hardware range |
 | LilyGO T3S3 (SX1280) | ~$25 | ESP-NOW + FLRC | all-in-one, OLED, battery |
-| ESP32 + bare SX1280 module | ~$17 | ESP-NOW + FLRC | DIY wiring: SPI + BUSY + DIO1 |
+| ESP32 + bare SX1280 module | ~$12 | ESP-NOW + FLRC | DIY wiring: SPI + BUSY + DIO1 |
 
 ## What you build with it
 

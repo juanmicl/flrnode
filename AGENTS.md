@@ -9,7 +9,8 @@ you handle code, tests, docs, and automation.
 FLRNode turns cheap ESP32/ESP8266 boards (+ optional SX1280 modules) into
 high-speed, encrypted radio links for the Reticulum Network Stack (RNS).
 
-Tagline: "The 1 Mbps encrypted radio link for makers: $15, 2 km, no license."
+Tagline: "The encrypted radio link for makers: $12 a node, up to 1 Mbps
+and 2 km, no license."
 
 Two transports, one core:
 
