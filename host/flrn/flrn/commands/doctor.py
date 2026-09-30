@@ -8,6 +8,7 @@ both healthy topologies.
 """
 
 from pathlib import Path
+import configparser
 import getpass
 import grp
 import os
@@ -21,22 +22,44 @@ from .config import REFLASH_CMD
 
 
 def check_config_format(path) -> tuple[bool, str]:
-    """Validate one RNS config file's SerialInterface shape: the
-    2025-12 format uses port/speed under an [interfaces] parent; the
-    pre-2025-12 keys (serial_port/serial_speed) are rejected."""
+    """Validate one RNS config file's SerialInterface shape by actually
+    parsing it (configparser, lenient: no interpolation, duplicate
+    sections tolerated): interface sections ([[...]]) must declare
+    type = SerialInterface with port/speed; the pre-2025-12 keys
+    (serial_port/serial_speed) are rejected, and so is `enabled` —
+    the real RNS key is `interface_enabled`."""
     try:
         text = Path(path).read_text()
     except OSError as e:
         return False, f"unreadable: {e}"
-    if "serial_port" in text or "serial_speed" in text:
-        return False, ("pre-2025-12 keys found (serial_port/"
-                       "serial_speed) — migrate to port/speed under "
-                       "[interfaces]")
-    needed = ("[interfaces]", "SerialInterface", "port = ", "speed = ")
-    missing = [k for k in needed if k not in text]
-    if missing:
-        return False, ("missing SerialInterface bits: "
-                       + ", ".join(missing))
+    cp = configparser.ConfigParser(interpolation=None, strict=False)
+    try:
+        cp.read_string(text)
+    except configparser.Error as e:
+        return False, f"unparsable: {e}"
+    for sec in cp.sections():
+        for legacy in ("serial_port", "serial_speed"):
+            if legacy in cp[sec]:
+                return False, ("pre-2025-12 keys found (serial_port/"
+                               "serial_speed) — migrate to port/speed "
+                               "under [interfaces]")
+    interface_secs = [cp[s] for s in cp.sections()
+                      if s.startswith("[") and s.endswith("]")]
+    if not interface_secs:
+        return False, ("missing SerialInterface bits: [interfaces], "
+                       "SerialInterface")
+    serial_secs = [s for s in interface_secs
+                   if s.get("type") == "SerialInterface"]
+    if not serial_secs:
+        return False, "missing SerialInterface bits: SerialInterface"
+    for iface in serial_secs:
+        missing = [k + " = " for k in ("port", "speed") if k not in iface]
+        if missing:
+            return False, ("missing SerialInterface bits: "
+                           + ", ".join(missing))
+        if "enabled" in iface:
+            return False, ("invalid key `enabled` — the real RNS key is "
+                           "`interface_enabled`")
     return True, "2025-12 format (SerialInterface, port/speed)"
 
 

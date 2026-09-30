@@ -80,6 +80,9 @@ def run_round(src, dst, dsrc, ddst, frames, label, timeout=45):
     return ok, got
 
 def main():
+    if len(sys.argv) != 3:
+        print("usage: bridge_gate2.py <portA> <portB>", file=sys.stderr)
+        sys.exit(2)
     pa, pb = sys.argv[1], sys.argv[2]
     sa = serial.Serial(pa, 921600, timeout=1)
     sb = serial.Serial(pb, 921600, timeout=1)

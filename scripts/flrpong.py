@@ -90,7 +90,7 @@ def main():
         time.sleep(5)
 
     log(f"duration elapsed: {len(reported)} peer(s) round-tripped, exiting")
-    sys.exit(0)
+    sys.exit(0 if reported else 1)  # zero peers = the bench failed
 
 
 if __name__ == "__main__":

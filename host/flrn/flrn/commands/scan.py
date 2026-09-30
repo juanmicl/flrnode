@@ -19,6 +19,6 @@ def scan_bridges(ports: list[str] | None = None) -> list[Bridge]:
     for port in candidates:
         try:
             found.append(probe(port))
-        except (PortBusyError, LinkTimeout, LinkError, OSError):
-            continue  # held / wrong firmware / dead — omit, keep scanning
+        except (PortBusyError, LinkTimeout, LinkError, OSError, ValueError):
+            continue  # held / wrong firmware / dead / malformed — omit
     return found

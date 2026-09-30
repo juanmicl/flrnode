@@ -10,6 +10,7 @@ with one optional trailing newline. pyserial is imported only when a
 real port is opened, so hardware-less imports and tests stay clean.
 """
 
+import errno
 import json
 import subprocess
 import time
@@ -19,6 +20,7 @@ FLAG = 0x7E
 ESC = 0x7D
 ESC_MASK_PAIRS = {0x5E: 0x7E, 0x5D: 0x7D}
 CTRL_MAX_BYTES = 95  # §8: the bridge's CTRL heuristic bound
+_BOOT_LINE_MAX_BUF = 8 * 1024  # read_boot_line accumulation cap
 
 
 class LinkError(RuntimeError):
@@ -118,6 +120,19 @@ def _lsof_pid(port: str) -> str | None:
     return None
 
 
+def _is_busy_error(e: OSError) -> bool:
+    """True when an open failure means another holder on the port:
+    pyserial's exclusive lock surfaces as EBUSY or a 'resource busy' /
+    'exclusively lock' message depending on version. Plain permission
+    failures (EACCES + 'Permission denied') deliberately do NOT match —
+    those stay OSError so the CLI can show the dialout hint."""
+    if e.errno == errno.EBUSY:
+        return True
+    text = str(e).lower()
+    return ("device or resource busy" in text
+            or "exclusively lock" in text)
+
+
 class BridgeLink:
     """One attached bridge over its serial port.
 
@@ -131,6 +146,12 @@ class BridgeLink:
         self._ser = None
 
     def open(self) -> None:
+        """Open the serial port exclusively (a second holder is mapped
+        to PortBusyError); an injected fake port is used as-is.
+        Context: any. Blocking: holder check (fuser/lsof, <= 4 s) plus
+        the open itself. Failure: PortBusyError or the underlying
+        OSError (e.g. permission — surfaced with the dialout hint by
+        the CLI)."""
         if self._ser is not None:
             return
         if isinstance(self._port, str):
@@ -143,7 +164,21 @@ class BridgeLink:
                                  "--port"),
                 )
             import serial  # deferred: hardware-less imports stay clean
-            self._ser = serial.Serial(self._port, self._baud, timeout=1)
+            try:
+                self._ser = serial.Serial(self._port, self._baud,
+                                          timeout=1, exclusive=True)
+            except OSError as e:
+                # Race: a holder appeared between the pre-check and the
+                # open (pyserial's exclusive lock fails with EBUSY / a
+                # 'resource busy' message).
+                if _is_busy_error(e):
+                    raise PortBusyError(
+                        f"{self._port} is held by another process",
+                        holder_hint=(f"rnsd may be using {self._port} — "
+                                     "systemctl --user stop rnsd or "
+                                     "pass --port"),
+                    ) from e
+                raise
         else:
             self._ser = self._port  # injected fake / pre-opened port
 
@@ -171,11 +206,16 @@ class BridgeLink:
 
     def read_boot_line(self, timeout: float = 4.0) -> dict:
         """Collect raw bytes until a JSON boot line arrives (the boot
-        line is printed raw, not HDLC-framed). Raises LinkTimeout."""
+        line is printed raw, not HDLC-framed). The accumulation buffer
+        is capped (oldest bytes dropped) so a garbage-spewing port
+        cannot turn the timeout window into an O(n^2) re-split.
+        Raises LinkTimeout."""
         deadline = time.monotonic() + timeout
         buf = b""
         while time.monotonic() < deadline:
             buf += self._read_some()
+            if len(buf) > _BOOT_LINE_MAX_BUF:
+                buf = buf[-1024:]  # one line's worth; boot lines ~150 B
             for line in buf.split(b"\n"):
                 d = parse_boot_line(line)
                 if d is not None:
@@ -188,12 +228,19 @@ class BridgeLink:
 
     def ctrl(self, request: dict, timeout: float = 3.0) -> dict:
         """Send one CTRL command (§8: COMPACT JSON, <= 95 bytes,
-        validated BEFORE writing) and await one JSON reply."""
+        validated BEFORE writing) and await one JSON reply. Unsolicited
+        {"event": ...} payloads (§8) are skipped, not returned, and the
+        input buffer is drained first so a stale reply from a previous
+        timed-out command cannot satisfy this one. CTRL-only: never use
+        on a link whose boot line is still expected."""
         raw = json.dumps(request, separators=(",", ":")).encode()
         if len(raw) > CTRL_MAX_BYTES:
             raise LinkError(
                 f"CTRL command is {len(raw)} bytes; the wire bound is "
                 f"{CTRL_MAX_BYTES} (§8) — shorten the request")
+        drain = getattr(self._ser, "reset_input_buffer", None)
+        if drain is not None:
+            drain()
         self._ser.write(frame(raw))
         self._ser.flush()
         deadline = time.monotonic() + timeout
@@ -203,7 +250,7 @@ class BridgeLink:
             for payload in deframe(buf):
                 if payload.startswith(b'{"'):
                     d = parse_boot_line(payload)
-                    if d is not None:
+                    if d is not None and "event" not in d:
                         return d
             # Bound the buffer: DATA-only streams must not grow it
             # unboundedly; 1 KiB exceeds the ~380 B worst-case stats

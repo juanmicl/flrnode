@@ -69,6 +69,8 @@ def probe(port: str) -> Bridge:
     """Probe one port for a bridge: busy pre-check (rnsd holds ports
     without failing exclusive open), then reset + boot-line read at
     921600 (bridge) with one 115200 retry (M1 ping-pong firmware).
+    A malformed boot line (e.g. a channel that is not an int) counts
+    as no bridge at that baud and falls through to the retry.
     Raises PortBusyError (with .holder_hint) or LinkTimeout."""
     holder = port_holder(port)
     if holder:
@@ -87,17 +89,19 @@ def probe(port: str) -> Bridge:
                 boot = link.read_boot_line(timeout=_PROBE_TIMEOUT_S)
             finally:
                 link.close()
-        except (LinkTimeout, LinkError, OSError) as e:
+            return Bridge(
+                port=port,
+                fw=str(boot.get("fw", "unknown")),
+                mac=str(boot.get("mac", "")),
+                peer=str(boot.get("peer", "")),
+                channel=int(boot.get("channel", 0)),
+                mode=str(boot.get("mode", "unknown")),
+            )
+        except (LinkTimeout, LinkError, OSError, ValueError) as e:
+            # ValueError: boot line parsed but a field is malformed —
+            # not a bridge at this baud; try the next one.
             last_error = e
             continue
-        return Bridge(
-            port=port,
-            fw=str(boot.get("fw", "unknown")),
-            mac=str(boot.get("mac", "")),
-            peer=str(boot.get("peer", "")),
-            channel=int(boot.get("channel", 0)),
-            mode=str(boot.get("mode", "unknown")),
-        )
     raise LinkTimeout(
         f"no boot line from {port} at 921600 or 115200 "
         f"({last_error})")

@@ -114,12 +114,20 @@ def cmd_config_set(bridges: list[Bridge], key: str, val, *,
     stats_period (§8: immediate effect — no reboot, no link drop);
     pass True/False to override.
 
+    An EMPTY bridges list raises SystemExit (CLI-grade message) —
+    applying to zero bridges would otherwise be a silent no-op with a
+    misleading empty-reprobe "disagree" error.
+
     A PARTIAL apply raises ConfigError carrying the desync state —
     "applied on <ports>; <failed port> failed — the pair is DESYNCED;
     re-run the same set on both bridges" — with the original cause
     preserved; resets still run (reset-then-raise). Raises SystemExit
-    (preconditions), OldFirmwareError (fw gate or unknown_cmd),
-    ConfigError, or link errors."""
+    (empty list, preconditions), OldFirmwareError (fw gate or
+    unknown_cmd), ConfigError, or link errors."""
+    if not bridges:
+        raise SystemExit(
+            "no bridges found — stop rnsd (systemctl --user stop rnsd) "
+            "or pass --port")
     validate_set_preconditions(bridges, key, val, force=force, yes=yes)
     for b in bridges:
         check_fw(b)

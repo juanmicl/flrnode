@@ -1,11 +1,13 @@
 """flrn.cli — argparse wiring and human/JSON rendering for the commands.
 
-Exit codes: 0 success; 1 operation failed (timeout, config error,
-old firmware); 2 port busy (holder hint printed). SystemExit from
-precondition validation propagates (argparse-grade message + code 1).
+Exit codes: 0 success (also Ctrl-C); 1 operation failed (timeout,
+config error, old firmware, port open failure); 2 port busy (holder
+hint printed) or argparse misuse. SystemExit from precondition
+validation propagates (argparse-grade message + code 1).
 """
 
 import argparse
+import errno
 import json
 import sys
 
@@ -73,15 +75,16 @@ def main(argv=None) -> int:
     cf.add_argument("action", choices=["get", "set"])
     cf.add_argument("key")
     cf.add_argument("val", nargs="?")
-    cf.add_argument("--port")
-    cf.add_argument("--all-bridges", action="store_true")
+    port_args = cf.add_mutually_exclusive_group()
+    port_args.add_argument("--port")
+    port_args.add_argument("--all-bridges", action="store_true")
     cf.add_argument("--force", action="store_true")
     cf.add_argument("--yes", action="store_true")
 
     tp = sub.add_parser("test", help="over-air link test between two bridges")
     tp.add_argument("portA")
     tp.add_argument("portB")
-    tp.add_argument("-n", type=int, default=50)
+    tp.add_argument("-n", type=_frame_count, default=50)
     tp.add_argument("--json", action="store_true")
 
     dp = sub.add_parser("doctor", help="health checks with fixes")
@@ -148,12 +151,56 @@ def main(argv=None) -> int:
             run_setup(assume_yes=args.yes_setup,
                       config_dir=args.config_dir)
         return EXIT_OK
+    except KeyboardInterrupt:
+        return EXIT_OK  # Ctrl-C is the normal exit for --watch
     except PortBusyError as e:
         print(f"BUSY: {e}\n{e.holder_hint}", file=sys.stderr)
         return EXIT_BUSY
-    except (LinkTimeout, LinkError, ConfigError, OldFirmwareError) as e:
+    except (LinkTimeout, LinkError, ConfigError, OldFirmwareError,
+            ValueError) as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return EXIT_FAIL
+    except OSError as e:
+        # serial.SerialException is an OSError: without dialout the
+        # port open fails — the most common first-run error.
+        if _is_permission_error(e):
+            print(f"ERROR: cannot open {_args_port(args)}: {e} — add "
+                  "yourself to the dialout group (sudo usermod -aG "
+                  "dialout $USER, then re-login)", file=sys.stderr)
+        else:
+            print(f"ERROR: {e}", file=sys.stderr)
+        return EXIT_FAIL
+
+
+def _frame_count(text: str) -> int:
+    """argparse type for `test -n`: 1..255. The in-order witness is the
+    seed byte i & 0xFF — a higher count wraps seeds and forces false
+    FAIL verdicts."""
+    try:
+        n = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid frame count: {text!r}") from None
+    if not 1 <= n <= 255:
+        raise argparse.ArgumentTypeError(
+            "frame count must be 1-255 (the seed byte is i & 0xFF)")
+    return n
+
+
+def _args_port(args) -> str | None:
+    """The positional port of the active subcommand, if any."""
+    for name in ("port", "portA", "portB"):
+        p = getattr(args, name, None)
+        if p:
+            return p
+    return None
+
+
+def _is_permission_error(e: OSError) -> bool:
+    """True when an open failure looks like missing dialout rights
+    (EACCES/EPERM or a 'Permission denied' message)."""
+    return e.errno in (errno.EACCES, errno.EPERM) \
+        or "permission" in str(e).lower()
 
 
 def _coerce(val: str):

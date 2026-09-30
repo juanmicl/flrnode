@@ -7,12 +7,12 @@
 
 [reticulum]
   enable_transport = yes
-  share_instance = no
+  share_instance = yes
 
 [interfaces]
   [[Default Interface]]
     type = SerialInterface
-    enabled = yes
+    interface_enabled = yes
     port = /dev/serial/by-id/usb-1a86_7523_IFLNodeBridge-if00-port0
     speed = 921600
     databits = 8
