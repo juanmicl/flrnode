@@ -26,7 +26,8 @@ uint8_t fragSplit(const uint8_t* frame, size_t len, FragSink sink, void* ctx,
 
 void Reassembler::begin(Deliver d, void* ctx) {
   deliver_ = d; dctx_ = ctx; rcvCum_ = 0; haveBase_ = false;
-  for (auto& s : slots_) s.cnt = 0;
+  completedSince_ = false;
+  for (auto& s : slots_) { s.cnt = 0; s.agedNakLatch = false; }
 }
 void Reassembler::tick(uint32_t nowMs) {
   // GC: aged PARTIAL slots are discarded. Aged COMPLETE slots are kept —
@@ -50,13 +51,15 @@ void Reassembler::tick(uint32_t nowMs) {
     if (head == L2_SEQ_SENTINEL) head = 1;  // sentinel skip
     if (findSlot_(head) != nullptr) break;
     bool any = false;
-    uint32_t oldest = 0;
+    uint32_t oldestAge = 0;
     for (auto& s : slots_) {
       if (s.cnt == 0) continue;
-      if (!any || s.lastTouchMs < oldest) { oldest = s.lastTouchMs; any = true; }
+      const uint32_t age = nowMs - s.lastTouchMs;  // modular delta
+      if (!any || age > oldestAge) { oldestAge = age; any = true; }
     }
-    if (!any || nowMs - oldest <= kSlotGcMs) break;
+    if (!any || oldestAge <= kSlotGcMs) break;
     rcvCum_ = head;
+    completedSince_ = true;  // 5.2: the advance is ACK-worthy
   }
   tryAdvance_();
 }
@@ -72,16 +75,18 @@ Reassembler::Slot* Reassembler::allocSlot_(uint16_t seq, uint32_t nowMs) {
     if (s.cnt == 0) {
       s.seq = seq; s.cnt = 1;  // cnt set by caller; mark in use
       s.recvBits = 0; s.fragSize = 0; s.lastLen = 0;
-      s.lastTouchMs = nowMs;
+      s.lastTouchMs = nowMs; s.agedNakLatch = false;
       return &s;
     }
-  // no free slot: evict the least recently touched
+  // no free slot: evict the least recently touched (MODULAR "older
+  // than": the delta-negative slot wins, wrap-safe at 49.7 days)
   Slot* victim = &slots_[0];
   for (auto& s : slots_)
-    if (s.lastTouchMs < victim->lastTouchMs) victim = &s;
+    if ((int32_t)(uint32_t)(s.lastTouchMs - victim->lastTouchMs) < 0)
+      victim = &s;
   victim->seq = seq; victim->cnt = 1; victim->recvBits = 0;
   victim->fragSize = 0; victim->lastLen = 0;
-  victim->lastTouchMs = nowMs;
+  victim->lastTouchMs = nowMs; victim->agedNakLatch = false;
   return victim;
 }
 
@@ -109,6 +114,7 @@ void Reassembler::tryAdvance_() {
           : (size_t)(s.cnt - 1) * s.fragSize + s.lastLen;
       if (deliver_) deliver_(dctx_, s.buf, total);
       rcvCum_ = s.seq;
+      completedSince_ = true;  // 5.2: a completion/delivery ACKs
       if (!haveBase_) {
         haveBase_ = true;
         for (auto& z : slots_)
@@ -124,19 +130,17 @@ FragRx Reassembler::onFragment(uint16_t seq, uint8_t idx, uint8_t cnt,
                                const uint8_t* data, size_t n,
                                uint32_t nowMs) {
   // Stale/window classification is baseline-gated and MODULAR (P-11: a
-  // booting receiver accepts the first frame wherever its seq starts,
-  // e.g. 65534 — signed-negative distance = wrap-ahead, accepted; a
-  //   plainly-forward distance beyond the window overflows). After the
-  //   baseline: behind (>= 32768 modular) = stale, ahead > window =
-  //   overflow. Pre-baseline: only plainly-forward overflow rejects; the
-  //   first completion baselines anywhere.
-  const uint16_t relRaw = (uint16_t)(seq - rcvCum_);
-  const int16_t srel = (int16_t)relRaw;
+  // booting receiver accepts the first frame wherever its seq starts).
+  // Post-baseline: behind (>= 32768 modular) = stale, ahead > window =
+  // overflow. PRE-baseline: everything is accepted — the first
+  // COMPLETION baselines rcvCum wherever the live sender happens to be,
+  // so a rebooted receiver resyncs on first contact (CCMP peer auth
+  // bounds who can reach us); a magnitude check here would wedge the
+  // link until seq wraparound instead.
   if (haveBase_) {
+    const uint16_t relRaw = (uint16_t)(seq - rcvCum_);
     if (relRaw == 0 || relRaw >= 32768) return FragRx::STALE;  // seq <= cum
     if (relRaw > (uint16_t)kSlots) return FragRx::OVERFLOW;
-  } else if (srel > (int16_t)kSlots) {
-    return FragRx::OVERFLOW;
   }
 
   FragRx outcome = FragRx::ACCEPTED;
@@ -147,7 +151,7 @@ FragRx Reassembler::onFragment(uint16_t seq, uint8_t idx, uint8_t cnt,
     // the arriving fragment is stored under the new layout and
     // META_CONFLICT is reported so the caller can count the event.
     s->recvBits = 0; s->fragSize = 0; s->lastLen = 0;
-    s->cnt = cnt; s->lastTouchMs = nowMs;
+    s->cnt = cnt; s->lastTouchMs = nowMs; s->agedNakLatch = false;
     outcome = FragRx::META_CONFLICT;
   } else if (s == nullptr) {
     s = allocSlot_(seq, nowMs);
@@ -156,6 +160,7 @@ FragRx Reassembler::onFragment(uint16_t seq, uint8_t idx, uint8_t cnt,
   const uint16_t bit = (uint16_t)(1u << idx);
   if (s->recvBits & bit) return FragRx::ACCEPTED_DUP;  // idempotent merge
   s->lastTouchMs = nowMs;
+  s->agedNakLatch = false;  // a stored fragment re-arms the aged NAK
 
   // Placement: non-last fragments are full and define fragSize; the
   // last fragment sits at (cnt-1)*fragSize. A last-fragment arriving
@@ -174,6 +179,7 @@ FragRx Reassembler::onFragment(uint16_t seq, uint8_t idx, uint8_t cnt,
     if (cnt == 1) s->lastLen = (uint16_t)n;
   }
   s->recvBits |= (uint16_t)(1u << idx);
+  if (s->recvBits == (uint16_t)((1u << s->cnt) - 1)) completedSince_ = true;
   tryAdvance_();
   return outcome;
 }
@@ -200,6 +206,71 @@ RxReport Reassembler::report() const {
     }
   }
   return r;
+}
+
+RxReport Reassembler::nakReport(uint16_t arrSeq, uint8_t arrIdx,
+                                uint32_t nowMs) {
+  RxReport r{};
+  r.ackBitmap = 0;
+  r.nakCount = 0;
+  // Section 5.3 trigger, burst-safe (walks the bitmap window so entries
+  // stay lowest-seq-first like report()):
+  //  - the ARRIVING slot NAKs only when arrIdx > 0 AND a lower-index
+  //    fragment of that same slot is missing, listing ONLY those lower
+  //    bits — higher fragments may still be inbound (back-to-back burst,
+  //    2-4 ms apart), and NAKing them burns unspaced sender retries;
+  //  - any OTHER slot NAKs only once it has stayed partial > kNakAgeMs
+  //    (one entry per gap episode — the latch re-arms on the next touch).
+  for (uint8_t i = 0; i < kSlots; ++i) {
+    const uint16_t seq = (uint16_t)(rcvCum_ + 1 + i);
+    Slot* found = findSlot_(seq);
+    if (found == nullptr) continue;
+    const uint16_t all = (uint16_t)((1u << found->cnt) - 1);
+    const uint16_t missing = (uint16_t)(~found->recvBits & all);
+    if (missing == 0) continue;
+    if (seq == arrSeq) {
+      if (arrIdx == 0 || arrIdx >= found->cnt) continue;
+      const uint16_t m = (uint16_t)(missing & ((1u << arrIdx) - 1));
+      if (m == 0 || r.nakCount >= 4) continue;
+      r.nakSeqs[r.nakCount] = seq;
+      r.nakMasks[r.nakCount] = (uint8_t)m;
+      ++r.nakCount;
+    } else if ((uint32_t)(nowMs - found->lastTouchMs) > kNakAgeMs &&
+               !found->agedNakLatch && r.nakCount < 4) {
+      r.nakSeqs[r.nakCount] = seq;
+      r.nakMasks[r.nakCount] = (uint8_t)missing;
+      ++r.nakCount;
+      found->agedNakLatch = true;
+    }
+  }
+  return r;
+}
+
+RxReport Reassembler::agedNakReport(uint32_t nowMs) {
+  RxReport r{};
+  r.ackBitmap = 0;
+  r.nakCount = 0;
+  for (uint8_t i = 0; i < kSlots; ++i) {
+    const uint16_t seq = (uint16_t)(rcvCum_ + 1 + i);
+    Slot* found = findSlot_(seq);
+    if (found == nullptr || found->agedNakLatch) continue;
+    const uint16_t all = (uint16_t)((1u << found->cnt) - 1);
+    const uint16_t missing = (uint16_t)(~found->recvBits & all);
+    if (missing == 0) continue;
+    if ((uint32_t)(nowMs - found->lastTouchMs) <= kNakAgeMs) continue;
+    if (r.nakCount >= 4) break;
+    r.nakSeqs[r.nakCount] = seq;
+    r.nakMasks[r.nakCount] = (uint8_t)missing;
+    ++r.nakCount;
+    found->agedNakLatch = true;
+  }
+  return r;
+}
+
+bool Reassembler::takeCompleted() {
+  const bool c = completedSince_;
+  completedSince_ = false;
+  return c;
 }
 
 }  // namespace flr

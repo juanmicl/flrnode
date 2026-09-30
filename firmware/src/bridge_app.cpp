@@ -61,7 +61,8 @@ void BridgeApp::handleCtrl_(const uint8_t* payload, size_t n) {
   // strict section-8 example format, no whitespace tolerance
   if (strstr(buf, "\"cmd\":\"stats\"") != nullptr) {
     const ArqStats& s = arq_.stats();
-    char line[384];  // pinned 14-key stats schema; worst case < 384 B
+    char line[512];  // pinned 14-key stats schema; ~28 B worst-case head-
+                     // room at 384 was too tight — 512, same format
     snprintf(line, sizeof(line),
         "{\"stats\":{\"tx_frames\":%lu,\"tx_frags\":%lu,\"tx_retries\":%lu,"
         "\"tx_dropped\":%lu,\"tx_too_big\":%lu,\"tx_window_overflow\":%lu,"

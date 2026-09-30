@@ -12,6 +12,7 @@ void ArqSession::reasmDeliver_(void* ctx, const uint8_t* d, size_t n) {
 void ArqSession::begin(Transport* t, uint32_t nowMs, uint16_t seedSeq) {
   t_ = t;
   nextSeq_ = seedSeq;
+  lastCum_ = 0;
   allocCounter_ = 0;
   backlogHead_ = 0;
   backlogCount_ = 0;
@@ -36,6 +37,17 @@ ArqSession::TxFrame* ArqSession::findBySeq_(uint16_t seq) {
 uint16_t ArqSession::allocSeq_() {
   do { ++nextSeq_; } while (nextSeq_ == L2_SEQ_SENTINEL);  // skip 0, wrap
   return nextSeq_;
+}
+
+bool ArqSession::seqWouldOverflow_() const {
+  // nextSeq_ is the LAST allocated seq; the next allocation is
+  // nextSeq_+1 with the 0 sentinel skipped (section 5.4). The receiver
+  // window is rcv_cum+1 .. rcv_cum+W, so anything above lastCum_+W is
+  // overflow-dropped there (5.1: never emit SEQ > cumulative_ack + W).
+  uint16_t nxt = (uint16_t)(nextSeq_ + 1);
+  if (nxt == L2_SEQ_SENTINEL) nxt = 1;
+  const uint16_t top = (uint16_t)(lastCum_ + kWindow);
+  return (int16_t)(uint16_t)(nxt - top) > 0;
 }
 
 void ArqSession::sendFragment_(TxFrame& f, uint8_t idx, bool retry,
@@ -71,6 +83,9 @@ void ArqSession::dropFrame_(TxFrame& f) {
 }
 
 void ArqSession::retireAcked_(uint16_t cumSeq, uint8_t bitmap) {
+  // Track the most recent cumulative ACK (monotonic, modular): it bounds
+  // SEQ allocation after out-of-order retirements (section 5.1).
+  if ((int16_t)(uint16_t)(cumSeq - lastCum_) > 0) lastCum_ = cumSeq;
   for (auto& f : win_) {
     if (f.seq == 0) continue;
     const int16_t d = (int16_t)(f.seq - cumSeq);
@@ -106,7 +121,12 @@ bool ArqSession::tx(const uint8_t* frame, size_t len, uint32_t nowMs) {
     return false;
   }
   TxFrame* f = freeFrame_();
-  if (f == nullptr) {
+  // Park instead of allocating past the ACKed window: after an
+  // out-of-order retirement a slot can be free while nextSeq_ still
+  // sits beyond lastCum_+W — such a frame would be overflow-dropped by
+  // the receiver and burn 5 retries. Park (no seq, no counters beyond
+  // admission); promotion re-checks on every ack tick.
+  if (f == nullptr || seqWouldOverflow_()) {
     if (backlogCount_ >= kBacklog) {
       ++stats_.txWindowOverflow;
       return false;
@@ -125,6 +145,9 @@ bool ArqSession::tx(const uint8_t* frame, size_t len, uint32_t nowMs) {
 
 void ArqSession::promoteBacklog_(uint32_t nowMs) {
   while (backlogCount_ > 0) {
+    // Fix (5.1): a parked frame stays parked while its future seq would
+    // land outside the ACKed window — wait for the next ACK to advance.
+    if (seqWouldOverflow_()) break;
     TxFrame* f = freeFrame_();
     if (f == nullptr) break;
     const size_t slot = backlogHead_;
@@ -165,7 +188,6 @@ void ArqSession::onPdu(const uint8_t* raw, size_t len, uint32_t nowMs) {
   }
   if (h.ftype == L2_DATA_FRAG) {
     ++stats_.rxFrags;
-    const uint16_t before = reasm_.rcvCum();
     const FragRx r = reasm_.onFragment(h.seq, h.fragIdx, h.fragCnt, pl,
                                        pn, nowMs);
     switch (r) {
@@ -186,8 +208,11 @@ void ArqSession::onPdu(const uint8_t* raw, size_t len, uint32_t nowMs) {
       case FragRx::ACCEPTED:
         break;
     }
-    if (reasm_.rcvCum() != before) emitAck_();  // completeness (5.2)
-    const RxReport rep = reasm_.report();
+    if (reasm_.takeCompleted()) emitAck_();  // 5.2: ANY slot completion
+    // 5.3 NAK, burst-safe trigger (arriving lower-gap only; aged slots
+    // via the per-slot age latch). report()'s raw NAK list is NOT used
+    // here — it would NAK fragments still in flight on every arrival.
+    const RxReport rep = reasm_.nakReport(h.seq, h.fragIdx, nowMs);
     if (rep.nakCount > 0) emitNak_(rep);
     return;
   }
@@ -196,6 +221,14 @@ void ArqSession::onPdu(const uint8_t* raw, size_t len, uint32_t nowMs) {
 
 void ArqSession::tick(uint32_t nowMs) {
   reasm_.tick(nowMs);
+  // 5.2: tick-side completions too — a GC-advance or an aged complete
+  // slot delivering here moves rcvCum without any DATA arrival; report
+  // it so the sender's window keeps moving.
+  if (reasm_.takeCompleted()) emitAck_();
+  // 5.3, age half of the trigger: a slot that went quiet while partial
+  // (burst over, fragment genuinely lost) gets ONE NAK per episode.
+  const RxReport aged = reasm_.agedNakReport(nowMs);
+  if (aged.nakCount > 0) emitNak_(aged);
   for (auto& f : win_) {
     if (f.seq == 0) continue;
     for (uint8_t i = 0; i < f.cnt; ++i) {

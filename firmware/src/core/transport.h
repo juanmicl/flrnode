@@ -6,7 +6,8 @@ namespace flr {
 
 struct TransportStats {
   uint32_t txOk = 0;        // frames accepted by the radio stack
-  uint32_t txFail = 0;      // failed after the single M1 retry (real loss)
+  uint32_t txFail = 0;      // radio-reported send loss (bridge: counted
+                            // where takeSendFailed hands it to ARQ)
   uint32_t txRetry = 0;     // retries issued from pump()
   uint32_t rx = 0;          // frames delivered upward
   uint32_t ringOverflow = 0;  // rejected push attempts incl. len > 250

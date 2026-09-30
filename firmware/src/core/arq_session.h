@@ -64,6 +64,10 @@ class ArqSession {
   TxFrame* freeFrame_();
   TxFrame* findBySeq_(uint16_t seq);
   uint16_t allocSeq_();
+  // True when the NEXT seq to allocate would land beyond the receiver's
+  // window top (lastCum_ + W, section 5.1). Modular: handles SEQ wrap.
+  // Context: loop/pump. Blocking: never. Failure: none.
+  bool seqWouldOverflow_() const;
   bool enqueueWindow_(const uint8_t* frame, size_t len, uint32_t nowMs,
                       TxFrame* f);
   void sendFragment_(TxFrame& f, uint8_t idx, bool retry, uint32_t nowMs);
@@ -81,6 +85,8 @@ class ArqSession {
   uint16_t backlogLen_[kBacklog] = {0};
   size_t backlogHead_ = 0, backlogCount_ = 0;
   uint16_t nextSeq_ = 0;
+  uint16_t lastCum_ = 0;  // cumulative ACK of the most recent ACK (5.1
+                          // window bound for new SEQ allocation)
   uint32_t allocCounter_ = 0;
   Reassembler reasm_;
   DeliverCb dcb_ = nullptr;

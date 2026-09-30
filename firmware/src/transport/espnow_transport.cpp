@@ -81,6 +81,18 @@ bool EspNowTransport::begin() {
   // fail loud at boot beats a silent wrong MAC at the bench — the app
   // lands in the idle-provisioning path via peerMacConfigured() == false.
   parseMac(FLR_PEER_MAC, peer_);
+  // Key selection (setKeys): a configured non-null, non-zero PMK replaces
+  // the dev placeholders for BOTH the PMK and the peer LMK (single-peer
+  // bridge: both ends load the same key). Applied below via the platform
+  // ifdef AFTER esp_now_init() and BEFORE the peer add (LMK binds at
+  // peer-add time).
+  const uint8_t* pmk = DEV_PMK;
+  const uint8_t* lmk = DEV_LMK;
+  if (pmk_ != nullptr) {
+    for (int i = 0; i < 16; ++i) {
+      if (pmk_[i]) { pmk = pmk_; lmk = pmk_; break; }
+    }
+  }
   WiFi.persistent(false);  // stored creds must not drag us off-channel
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
@@ -94,12 +106,12 @@ bool EspNowTransport::begin() {
   // without it esp_now_send returns -3 on every call (bench-verified).
   esp_now_set_self_role(ESP_NOW_ROLE_COMBO);
   // SDK prototypes take non-const u8* though the keys are read-only.
-  esp_now_set_kok(const_cast<uint8_t*>(DEV_PMK), 16);
+  esp_now_set_kok(const_cast<uint8_t*>(pmk), 16);
   esp_now_register_recv_cb(onRecvCb);
   esp_now_register_send_cb(onSendCb);
   if (peerMacConfigured())
     esp_now_add_peer(peer_, ESP_NOW_ROLE_COMBO, channel_,
-                     const_cast<uint8_t*>(DEV_LMK), 16);
+                     const_cast<uint8_t*>(lmk), 16);
 #else
   // EIRP compliance: txPower_ (default 17.5, M3: config-clamped <= 17)
   // + 2 dBi antenna <= 19.5 dBm EIRP <= 20 dBm (docs/compliance.md).
@@ -108,7 +120,7 @@ bool EspNowTransport::begin() {
   esp_wifi_set_max_tx_power((int8_t)(txPower_ * 4));
   esp_wifi_set_channel(channel_, WIFI_SECOND_CHAN_NONE);
   if (esp_now_init() != ESP_OK) return false;
-  esp_now_set_pmk(DEV_PMK);
+  esp_now_set_pmk(pmk);
   esp_now_register_recv_cb(onRecvCb);
   esp_now_register_send_cb(onSendCb);
   if (peerMacConfigured()) {
@@ -116,7 +128,7 @@ bool EspNowTransport::begin() {
     memcpy(p.peer_addr, peer_, 6);
     p.channel = channel_;
     p.encrypt = true;
-    memcpy(p.lmk, DEV_LMK, 16);
+    memcpy(p.lmk, lmk, 16);
     esp_now_add_peer(&p);
   }
 #endif
@@ -142,8 +154,8 @@ void EspNowTransport::pump() {
 #if !defined(FLR_APP_BRIDGE)
   // Ping-pong builds: autonomous single retry from loop context (M1
   // behavior). Bridge builds skip this entirely: the flag is consumed
-  // by ArqSession::onTransportSendFailed as retry #1 per 7.1, and the
-  // ARQ counters — not txFail — carry the story.
+  // by ArqSession::onTransportSendFailed as retry #1 per 7.1 (and the
+  // failure is counted into txFail at that takeSendFailed call).
   // Single immediate retry, decided here (loop context) — never from the
   // WiFi callback (reentrancy risk; loop-context retry by design).
   if (sendFailed_.load(std::memory_order_relaxed)) {
@@ -197,6 +209,10 @@ bool EspNowTransport::takeSendFailed() {
   // the clear window is bounded: the ARQ ladder recovers the fragment.
   if (sendFailed_.load(std::memory_order_relaxed)) {
     sendFailed_.store(false, std::memory_order_relaxed);
+    // Bridge builds consume the failure HERE (ping-pong consumes it in
+    // pump()'s own retry instead), so this is the one place the radio
+    // loss reaches stats_.txFail — otherwise it stays pinned at 0.
+    ++stats_.txFail;
     return true;
   }
   return false;

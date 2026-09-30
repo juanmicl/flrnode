@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <stdio.h>
+#include <string.h>
 
 #if defined(FLR_APP_BRIDGE)
 #include <EEPROM.h>
@@ -51,6 +52,12 @@ void setup() {
   const bool stored = cfgStore.load(img, sizeof(img), &cfg);
   s_bridge.setConfig(cfg);
   s_bridge.onConfigPersist(persistConfig, nullptr);
+  // Configured PMK (flrn config set pmk): hand it to the transport so
+  // begin() applies it to the radio; all-zero means "no configured key"
+  // and begin() keeps the compiled dev-key fallback (dev_keys.h).
+  bool hasPmk = false;
+  for (int i = 0; i < 16; ++i) hasPmk = hasPmk || (cfg.pmk[i] != 0);
+  if (hasPmk) transport.setKeys(cfg.pmk);
   transport.setChannel(cfg.channel);        // begin() applies both
   transport.setTxPower((float)cfg.txPower);
   if (!transport.begin()) {
@@ -68,12 +75,16 @@ void setup() {
   macHex(ownMac, own);
   s_bridge.setNodeId(ownMac);  // node identity for get node_id
   macHex(transport.peerMac(), peer);
+  // Key status only — a configured key is never echoed. Same JSON keys
+  // as before; hosts parse the schema, the "warn" VALUE reports state.
+  const char* keyWarn = hasPmk ? "pmk configured" : "dev keys";
   char boot[160];
   snprintf(boot, sizeof(boot),
            "{\"t\":\"boot\",\"fw\":\"m3\",\"mode\":\"bridge\",\"channel\":%d,"
-           "\"mac\":\"%s\",\"peer\":\"%s\",\"warn\":\"dev keys\"%s}",
+           "\"mac\":\"%s\",\"peer\":\"%s\",\"warn\":\"%s\"%s}",
            cfg.channel, own,
            transport.peerMacConfigured() ? peer : "UNSET-read-mac-above",
+           keyWarn,
            stored ? "" : ",\"cfg\":\"default\"");
   Serial.println(boot);
   if (!transport.peerMacConfigured()) {

@@ -23,6 +23,17 @@ class EspNowTransport : public Transport {
   // pin). Call BEFORE begin(); begin() applies it. Context: setup.
   // Blocking: never. Failure: none (caller clamps; ConfigStore caps 17).
   void setTxPower(float dbm) { txPower_ = dbm; }
+  // Configure the CCMP PMK applied by begin(). The pointer is STORED,
+  // not copied — it must outlive the transport (main passes the static
+  // Config). nullptr or an all-zero key keeps the compiled dev keys
+  // (dev_keys.h). A configured key is applied AFTER esp_now_init() and
+  // BEFORE the peer is added, and is used BOTH as the PMK and as the
+  // single peer's LMK: the bridge is a single-peer point-to-point link
+  // today (protocol.md section 3 known limitation), so both ends loading
+  // the same key is the working pairing model.
+  // Context: setup, BEFORE begin(). Blocking: never. Failure: none (a
+  // null/zero key silently selects the dev-key fallback).
+  void setKeys(const uint8_t pmk[16]) { pmk_ = pmk; }
   // Parses FLR_PEER_MAC ("AABBCCDDEEFF"), brings the radio up on the
   // configured channel (see setChannel), registers the encrypted peer.
   // Context: setup.
@@ -57,15 +68,18 @@ class EspNowTransport : public Transport {
   // access; platform callbacks carry no user pointer). Minimal work only.
   void ringPushIsr(const uint8_t* d, uint16_t l, int16_t r);
   void notifySendFailedIsr();
-  // Returns-and-clears the send-failure flag. Context: loop (tick).
-  // Blocking: never. Used by the bridge app to give the failure to
-  // the ARQ layer as retry #1 (protocol.md 7.1). Ping-pong builds
-  // never call this; their pump() retry consumes the flag itself.
+  // Returns-and-clears the send-failure flag (counting stats_.txFail).
+  // Context: loop (tick). Blocking: never. Used by the bridge app to
+  // give the failure to the ARQ layer as retry #1 (protocol.md 7.1)
+  // while still counting the radio-level loss. Ping-pong builds never
+  // call this; their pump() retry consumes the flag (and counts) itself.
   bool takeSendFailed() override;
 
  private:
   uint8_t channel_ = FLR_CHANNEL;  // radio/peer channel (setChannel)
   float txPower_ = 17.5f;          // dBm conducted (setTxPower); M1/M2 pin
+  const uint8_t* pmk_ = nullptr;   // configured PMK (setKeys); null/zero
+                                   // = compiled dev keys (dev_keys.h)
   RingBuffer ring_;
   TransportStats stats_{};
   FrameCb cb_ = nullptr;

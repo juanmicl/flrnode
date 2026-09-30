@@ -32,6 +32,16 @@ static size_t peerDataCount(const RadioCapture& cap, uint16_t seq,
   return hits;
 }
 
+// Craft one DATA-FRAG wire PDU (test helper for receiver-side feeds).
+static size_t mkFrag(uint16_t seq, uint8_t idx, uint8_t cnt,
+                     const uint8_t* d, size_t n, uint8_t* wire,
+                     size_t cap) {
+  flr::L2Pdu h{};
+  h.ftype = flr::L2_DATA_FRAG; h.seq = seq;
+  h.fragIdx = idx; h.fragCnt = cnt;
+  return flr::l2Encode(h, d, n, wire, cap);
+}
+
 static void test_tx_single_frame_on_air() {
   MockTransport a, b; RadioCapture cap; flr::ArqSession s;
   sessionSetup(a, b, cap, s);
@@ -216,6 +226,7 @@ struct TwoNode {
   MockTransport ta, tb;
   flr::ArqSession sa, sb;
   std::vector<std::vector<uint8_t>> delivered;
+  std::vector<std::vector<uint8_t>> saRx;  // PDUs sa received (ACKs/NAKs)
   uint32_t curT = 0;
 
   void init(uint16_t seedA = 0) {
@@ -227,6 +238,7 @@ struct TwoNode {
     }, this);
     ta.onFrame([](void* c, const uint8_t* d, size_t n, int16_t) {
       auto* N = static_cast<TwoNode*>(c);
+      N->saRx.emplace_back(d, d + n);
       N->sa.onPdu(d, n, N->curT);
     }, this);
     tb.onFrame([](void* c, const uint8_t* d, size_t n, int16_t) {
@@ -245,6 +257,20 @@ struct TwoNode {
     for (uint32_t t = from; t < to; t += dt) step(t);
   }
 };
+
+// First NAK (lowest-seq entry) sa received for `seq`; false if none.
+static bool firstNakEntry(const TwoNode& n, uint16_t seq, uint8_t* maskOut) {
+  for (auto& p : n.saRx) {
+    flr::L2Pdu h; const uint8_t* pl; size_t pn;
+    if (!flr::l2Decode(p.data(), p.size(), &h, &pl, &pn)) continue;
+    if (h.ftype != flr::L2_NAK || pn < 3) continue;
+    if ((uint16_t)((pl[0] << 8) | pl[1]) == seq) {
+      *maskOut = pl[2];
+      return true;
+    }
+  }
+  return false;
+}
 
 static void test_p04_happy_path_end_to_end() {
   TwoNode n;
@@ -268,8 +294,16 @@ static void test_p08_gap_nak_exact_recovery() {
   static uint8_t f[500];
   for (size_t i = 0; i < 500; ++i) f[i] = (uint8_t)(i ^ 0xA7);
   TEST_ASSERT_TRUE(n.sa.tx(f, 500, 0));       // 3 fragments
-  n.run(0, 1200);   // long enough: frag1's retransmits must slip the
-                    // dropEvery(2) parity and the covered-skip ladder
+  n.run(0, 60);
+  // Section 5.3 trigger: the first NAK must be the lower-gap one fired
+  // by fragment 2's arrival (mask 0x02 = fragment 1 only). The old
+  // burst trigger NAKed from fragment 0's arrival with mask 0x06
+  // (requesting the still-in-air fragments 1 AND 2) — never again.
+  uint8_t mask = 0;
+  TEST_ASSERT_TRUE(firstNakEntry(n, 1, &mask));
+  TEST_ASSERT_EQUAL_UINT8(0x02, mask);
+  n.run(60, 400);   // recovery: NAK retransmits slip the dropEvery(2)
+                    // parity and the covered-skip ladder
   TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)n.delivered.size());
   TEST_ASSERT_EQUAL_UINT32(500, (uint32_t)n.delivered[0].size());
   TEST_ASSERT_EQUAL_UINT8_ARRAY(f, n.delivered[0].data(), 500);
@@ -281,15 +315,19 @@ static void test_p08_gap_nak_exact_recovery() {
 static void test_p10_overflow_empty_nak() {
   TwoNode n;
   n.init();
-  flr::L2Pdu h{};
-  h.ftype = flr::L2_DATA_FRAG; h.seq = 50; h.fragIdx = 0; h.fragCnt = 1;
+  // Baseline first: window policing is a POST-baseline behaviour (a
+  // rebooting receiver baselines on first contact instead — see the
+  // reboot-resync test); P-10 tests the enforcement after it.
   const uint8_t p[4] = {1, 2, 3, 4};
   uint8_t wire[16];
-  const size_t w = flr::l2Encode(h, p, 4, wire, sizeof(wire));
+  size_t w = mkFrag(1, 0, 1, p, 4, wire, sizeof(wire));
+  TEST_ASSERT_TRUE(n.ta.send(wire, w));       // baselines sb at rcvCum=1
+  n.step(0);
+  w = mkFrag(50, 0, 1, p, 4, wire, sizeof(wire));
   TEST_ASSERT_TRUE(n.ta.send(wire, w));       // 50 >> rcvCum+8
-  n.run(0, 30);
+  n.step(5);
   TEST_ASSERT_EQUAL_UINT32(1, n.sb.stats().rxWindowOverflow);
-  TEST_ASSERT_EQUAL_UINT32(0, (uint32_t)n.delivered.size());
+  TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)n.delivered.size());
 }
 
 static void test_p11_seq_wrap() {
@@ -372,6 +410,224 @@ static void test_ack_discipline_dup_vs_stale() {
   TEST_ASSERT_EQUAL_UINT32(2, (uint32_t)n.delivered.size());
 }
 
+// ---- Fix 2: section 5.3 NAK trigger (burst-safe) ----
+
+// (a) an in-order 3-fragment burst with nothing lost produces ZERO NAKs
+static void test_burst_in_order_zero_naks() {
+  TwoNode n;
+  n.init();
+  static uint8_t f[500];                    // 3 fragments, in order
+  for (size_t i = 0; i < 500; ++i) f[i] = (uint8_t)(i * 13);
+  TEST_ASSERT_TRUE(n.sa.tx(f, 500, 0));
+  n.run(0, 120);
+  TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)n.delivered.size());
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(f, n.delivered[0].data(), 500);
+  TEST_ASSERT_EQUAL_UINT32(0, n.sb.stats().nakSent);
+  TEST_ASSERT_EQUAL_UINT32(0, n.sa.stats().txRetries);
+}
+
+// (b) fragment 1 of 3 arriving after fragment 0 was lost produces
+// exactly one NAK listing fragment 0 (never the higher fragments)
+static void test_nak_gap_lists_lower_missing_only() {
+  MockTransport a, b; RadioCapture cap; flr::ArqSession s;
+  sessionSetup(a, b, cap, s);
+  static uint8_t f[500];
+  for (size_t i = 0; i < 500; ++i) f[i] = (uint8_t)(i ^ 0x3C);
+  uint8_t wire[300]; size_t w;
+  w = mkFrag(1, 1, 3, f + 246, 246, wire, sizeof(wire));  // frag 0 LOST
+  s.onPdu(wire, w, 0);
+  b.pump();
+  TEST_ASSERT_EQUAL_UINT32(1, s.stats().nakSent);
+  TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)cap.pdus.size());
+  flr::L2Pdu h; const uint8_t* pl; size_t pn;
+  TEST_ASSERT_TRUE(flr::l2Decode(cap.pdus[0].data(), cap.pdus[0].size(),
+                                 &h, &pl, &pn));
+  TEST_ASSERT_EQUAL_UINT8(flr::L2_NAK, h.ftype);
+  TEST_ASSERT_EQUAL_UINT16(1, (uint16_t)((pl[0] << 8) | pl[1]));  // entry
+  TEST_ASSERT_EQUAL_UINT8(0x01, pl[2]);    // fragment 0 ONLY (not 0x05)
+  // burst tail arrives: the lower gap re-NAKs fragment 0, still nothing
+  // above the arriving index is requested
+  w = mkFrag(1, 2, 3, f + 492, 8, wire, sizeof(wire));
+  s.onPdu(wire, w, 5);
+  b.pump();
+  TEST_ASSERT_EQUAL_UINT32(2, s.stats().nakSent);
+  TEST_ASSERT_TRUE(flr::l2Decode(cap.pdus[1].data(), cap.pdus[1].size(),
+                                 &h, &pl, &pn));
+  TEST_ASSERT_EQUAL_UINT8(0x01, pl[2]);
+  // fragment 0 arrives: completes, delivers, ACKs — no further NAK
+  w = mkFrag(1, 0, 3, f, 246, wire, sizeof(wire));
+  s.onPdu(wire, w, 10);
+  b.pump();
+  TEST_ASSERT_EQUAL_UINT32(2, s.stats().nakSent);
+  TEST_ASSERT_EQUAL_UINT32(1, s.stats().ackSent);
+  TEST_ASSERT_EQUAL_UINT32(1, s.stats().rxDelivered);
+}
+
+// (c) a slot partial beyond the ~25 ms age threshold produces a NAK
+// from tick(), latched to one per gap episode
+static void test_nak_from_tick_after_age_threshold() {
+  MockTransport a, b; RadioCapture cap; flr::ArqSession s;
+  sessionSetup(a, b, cap, s);
+  static uint8_t f[500];
+  uint8_t wire[300]; size_t w;
+  w = mkFrag(1, 0, 3, f, 246, wire, sizeof(wire));  // frags 1..2 missing
+  s.onPdu(wire, w, 0);
+  b.pump();
+  TEST_ASSERT_EQUAL_UINT32(0, s.stats().nakSent);   // idx 0: never NAKs
+  s.tick(20);                                       // below threshold
+  b.pump();
+  TEST_ASSERT_EQUAL_UINT32(0, s.stats().nakSent);
+  s.tick(30);                                       // partial > 25 ms
+  b.pump();
+  TEST_ASSERT_EQUAL_UINT32(1, s.stats().nakSent);
+  s.tick(100);                                      // latched: no storm
+  s.tick(200);
+  b.pump();
+  TEST_ASSERT_EQUAL_UINT32(1, s.stats().nakSent);
+  // a stored fragment re-arms the latch
+  w = mkFrag(1, 2, 3, f + 492, 8, wire, sizeof(wire));
+  s.onPdu(wire, w, 210);
+  b.pump();
+  TEST_ASSERT_EQUAL_UINT32(2, s.stats().nakSent);   // lower-gap NAK (frag 1)
+  s.tick(300);                                      // aged again, re-armed
+  b.pump();
+  TEST_ASSERT_EQUAL_UINT32(3, s.stats().nakSent);
+}
+
+// ---- Fix 3: rebooted receiver resyncs on first contact ----
+
+static void test_receiver_reboot_baselines_mid_stream() {
+  MockTransport a, b; RadioCapture cap; flr::ArqSession s;
+  sessionSetup(a, b, cap, s);
+  std::vector<std::vector<uint8_t>> got;
+  s.onDelivered([](void* c, const uint8_t* d, size_t n) {
+    static_cast<std::vector<std::vector<uint8_t>>*>(c)->emplace_back(d, d + n);
+  }, &got);
+  static uint8_t f[500];
+  for (size_t i = 0; i < 500; ++i) f[i] = (uint8_t)(i ^ 0x5C);
+  // Sender mid-stream at seq 40000, receiver just booted (rcvCum 0, no
+  // baseline): the burst must deliver and baseline there, NOT overflow.
+  uint8_t wire[300]; size_t w;
+  w = mkFrag(40000, 0, 3, f, 246, wire, sizeof(wire));
+  s.onPdu(wire, w, 0);
+  w = mkFrag(40000, 1, 3, f + 246, 246, wire, sizeof(wire));
+  s.onPdu(wire, w, 3);
+  w = mkFrag(40000, 2, 3, f + 492, 8, wire, sizeof(wire));
+  s.onPdu(wire, w, 6);
+  b.pump();
+  TEST_ASSERT_EQUAL_UINT32(0, s.stats().rxWindowOverflow);  // no overflow
+  TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)got.size());
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(f, got[0].data(), 500);
+  // ACK path works: the completion ACK carries cum = 40000
+  TEST_ASSERT_EQUAL_UINT32(1, s.stats().ackSent);
+  flr::L2Pdu h; const uint8_t* pl; size_t pn;
+  TEST_ASSERT_TRUE(flr::l2Decode(cap.pdus[0].data(), cap.pdus[0].size(),
+                                 &h, &pl, &pn));
+  TEST_ASSERT_EQUAL_UINT8(flr::L2_ACK, h.ftype);
+  TEST_ASSERT_EQUAL_UINT16(40000, h.seq);
+  // post-baseline: the window is now 40001..40008 and enforcement is on
+  uint8_t p[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+  w = mkFrag(40001, 0, 1, p, 8, wire, sizeof(wire));
+  s.onPdu(wire, w, 10);
+  TEST_ASSERT_EQUAL_UINT32(2, s.stats().rxDelivered);
+}
+
+// ---- Fix 4: SEQ allocation stays inside the ACKed window ----
+
+static void test_tx_parks_beyond_ack_window() {
+  MockTransport a, b; RadioCapture cap; flr::ArqSession s;
+  sessionSetup(a, b, cap, s);
+  static uint8_t big[500];                  // 3 fragments each
+  static uint8_t small[10];
+  TEST_ASSERT_TRUE(s.tx(small, 10, 0));     // seq 1
+  for (int i = 0; i < 7; ++i)
+    TEST_ASSERT_TRUE(s.tx(big, 500, 0));    // seqs 2..8 (oracle setup)
+  b.pump();
+  // Frame 2 lost a fragment; frame 3 completed out of order: receiver
+  // ACKs cum=1 with seq3's bitmap bit -> seq1 + seq3 retire (2 slots).
+  uint8_t ack[8];
+  const size_t n = flr::l2EncodeAck(1, 0x40, ack, sizeof(ack));
+  s.onPdu(ack, n, 10);
+  TEST_ASSERT_TRUE(s.tx(small, 10, 10));    // seq 9 <= cum(1)+8: on air
+  b.pump();
+  TEST_ASSERT_EQUAL_UINT32(1, peerDataCount(cap, 9, 0, false));
+  // Next allocation would be 10 > cum+8: PARKED, never on air (pre-fix
+  // it was sent and overflow-dropped by the receiver after 5 retries).
+  TEST_ASSERT_TRUE(s.tx(small, 10, 10));
+  b.pump();
+  TEST_ASSERT_EQUAL_UINT32(0, peerDataCount(cap, 10, 0, false));
+  TEST_ASSERT_EQUAL_UINT32(0, s.stats().txTooBig);
+  TEST_ASSERT_EQUAL_UINT32(0, s.stats().txWindowOverflow);
+  TEST_ASSERT_EQUAL_UINT32(10, s.stats().txFrames);  // parked counts
+  // Window advances (cum=8): the parked frame promotes on tick.
+  const size_t n2 = flr::l2EncodeAck(8, 0, ack, sizeof(ack));
+  s.onPdu(ack, n2, 20);
+  s.tick(25);
+  b.pump();
+  TEST_ASSERT_EQUAL_UINT32(1, peerDataCount(cap, 10, 0, false));
+}
+
+// ---- Fix 5: ACK triggers ----
+
+// (a) ACK whenever ANY in-window slot completes, not only on cum advance
+static void test_ack_on_out_of_order_completion() {
+  MockTransport a, b; RadioCapture cap; flr::ArqSession s;
+  sessionSetup(a, b, cap, s);
+  uint8_t p[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+  uint8_t wire[16]; size_t w;
+  w = mkFrag(1, 0, 1, p, 8, wire, sizeof(wire));
+  s.onPdu(wire, w, 0);                      // cum 0 -> 1: ACK 1
+  b.pump();
+  TEST_ASSERT_EQUAL_UINT32(1, s.stats().ackSent);
+  w = mkFrag(3, 0, 1, p, 8, wire, sizeof(wire));
+  s.onPdu(wire, w, 5);                      // complete but blocked by 2
+  b.pump();
+  TEST_ASSERT_EQUAL_UINT32(2, s.stats().ackSent);   // 5.2: completion ACK
+  flr::L2Pdu h; const uint8_t* pl; size_t pn;
+  TEST_ASSERT_TRUE(flr::l2Decode(cap.pdus[1].data(), cap.pdus[1].size(),
+                                 &h, &pl, &pn));
+  TEST_ASSERT_EQUAL_UINT8(flr::L2_ACK, h.ftype);
+  TEST_ASSERT_EQUAL_UINT16(1, h.seq);               // cum unchanged
+  TEST_ASSERT_EQUAL_UINT8(0x40, (uint8_t)((h.fragIdx << 4) | h.fragCnt));
+  TEST_ASSERT_EQUAL_UINT32(0, s.stats().nakSent);   // no NAK rides along
+  w = mkFrag(2, 0, 1, p, 8, wire, sizeof(wire));
+  s.onPdu(wire, w, 10);                     // cum 1 -> 3 (2 and 3 deliver)
+  b.pump();
+  TEST_ASSERT_EQUAL_UINT32(3, s.stats().ackSent);
+  TEST_ASSERT_TRUE(flr::l2Decode(cap.pdus[2].data(), cap.pdus[2].size(),
+                                 &h, &pl, &pn));
+  TEST_ASSERT_EQUAL_UINT16(3, h.seq);
+  TEST_ASSERT_EQUAL_UINT32(3, s.stats().rxDelivered);
+}
+
+// (b) tick-side deliveries / GC-advance also produce the ACK
+static void test_ack_on_tick_gc_advance() {
+  MockTransport a, b; RadioCapture cap; flr::ArqSession s;
+  sessionSetup(a, b, cap, s);
+  uint8_t p[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+  uint8_t wire[16]; size_t w;
+  w = mkFrag(1, 0, 1, p, 8, wire, sizeof(wire));
+  s.onPdu(wire, w, 0);                      // cum 0 -> 1: ACK 1
+  b.pump();
+  TEST_ASSERT_EQUAL_UINT32(1, s.stats().ackSent);
+  w = mkFrag(3, 0, 1, p, 8, wire, sizeof(wire));
+  s.onPdu(wire, w, 10);  // complete witness behind the ABSENT seq 2
+  b.pump();
+  TEST_ASSERT_EQUAL_UINT32(2, s.stats().ackSent);
+  // tick past T_slot_gc: seq 2 is skipped (GC-advance), the kept
+  // complete seq 3 delivers, and ArqSession emits the ACK for the
+  // tick-side advance (cum 1 -> 3).
+  s.tick(5000 + 50);
+  b.pump();
+  TEST_ASSERT_EQUAL_UINT32(3, s.stats().ackSent);
+  flr::L2Pdu h; const uint8_t* pl; size_t pn;
+  TEST_ASSERT_TRUE(flr::l2Decode(cap.pdus[2].data(), cap.pdus[2].size(),
+                                 &h, &pl, &pn));
+  TEST_ASSERT_EQUAL_UINT8(flr::L2_ACK, h.ftype);
+  TEST_ASSERT_EQUAL_UINT16(3, h.seq);
+  TEST_ASSERT_EQUAL_UINT32(2, s.stats().rxDelivered);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_tx_single_frame_on_air);
@@ -390,5 +646,12 @@ int main() {
   RUN_TEST(test_p11_seq_wrap);
   RUN_TEST(test_lossy_soak_full_recovery);
   RUN_TEST(test_ack_discipline_dup_vs_stale);
+  RUN_TEST(test_burst_in_order_zero_naks);
+  RUN_TEST(test_nak_gap_lists_lower_missing_only);
+  RUN_TEST(test_nak_from_tick_after_age_threshold);
+  RUN_TEST(test_receiver_reboot_baselines_mid_stream);
+  RUN_TEST(test_tx_parks_beyond_ack_window);
+  RUN_TEST(test_ack_on_out_of_order_completion);
+  RUN_TEST(test_ack_on_tick_gc_advance);
   return UNITY_END();
 }

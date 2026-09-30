@@ -4,8 +4,11 @@
 
 namespace flr {
 
-// M1 ping-pong wire format. TEST-ONLY: big-endian like protocol.md 4,
-// but this codec is deleted at M2 when the real L2 PDU arrives.
+// M1 ping-pong wire format. BENCH-ERA ARTIFACT, KEPT: big-endian like
+// protocol.md 4. The real L2 PDU (core/l2_pdu.h) replaced this codec on
+// the wire at M2, but the M1/M2 build envs and the TEST-CHECKLIST
+// hardware gates still flash and drive the ping-pong apps through it,
+// so it ships. Do not delete without retiring those envs/gates first.
 constexpr size_t M1_FRAME_LEN = 13;
 constexpr uint8_t M1_TYPE_PING = 1;
 constexpr uint8_t M1_TYPE_PONG = 2;
