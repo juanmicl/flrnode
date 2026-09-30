@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  firmware:
+    name: Firmware (native tests + 6 board builds)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: firmware
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: PlatformIO cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
+      - run: pip install platformio
+      - name: Native unit tests
+        run: pio test -e native
+      - name: Embedded builds (d1_mini + esp32_dev, pinger/ponger/bridge)
+        run: pio run
+
+  host:
+    name: flrn (tests + packaging)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: host/flrn
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[test]" build twine
+      - name: pytest
+        run: python -m pytest -q
+      - name: Build sdist + wheel
+        run: python -m build
+      - name: twine check
+        run: python -m twine check dist/*
