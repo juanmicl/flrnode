@@ -1,5 +1,6 @@
 import pytest
-from flrn.link import BridgeLink, LinkError, deframe, frame, parse_boot_line
+from flrn.link import (BridgeLink, LinkError, LinkTimeout, PortBusyError,
+                       deframe, frame, parse_boot_line)
 
 
 def test_frame_roundtrip_plain():
@@ -83,3 +84,87 @@ def test_ctrl_oversize_rejected_before_write():
     with pytest.raises(LinkError):
         link.ctrl({"cmd": "set", "key": "pmk", "val": "00" * 48})
     assert fake.written == b""          # nothing reached the port
+
+
+# ---- Review-fix wave 2: event skip, drain-on-ctrl, busy open ----
+
+
+def test_ctrl_skips_unsolicited_event_payloads():
+    """§8: {"event": ...} frames are unsolicited — ctrl must keep
+    looping and return the ACTUAL reply, not the event."""
+    fake = FakeSer()
+    fake.reply = (frame(b'{"event":"air_rx","len":16}')
+                  + frame(b'{"channel":6}'))
+    link = BridgeLink(fake)
+    link.open()
+    assert link.ctrl({"cmd": "get", "key": "channel"}) == {"channel": 6}
+
+
+def test_ctrl_times_out_when_only_events_arrive():
+    fake = FakeSer()
+    fake.reply = frame(b'{"event":"air_rx"}')
+    link = BridgeLink(fake)
+    link.open()
+    with pytest.raises(LinkTimeout):
+        link.ctrl({"cmd": "get", "key": "channel"}, timeout=0.2)
+
+
+def test_ctrl_drains_stale_reply_from_previous_timeout():
+    """ctrl drains the input buffer first: a reply left over from a
+    previous timed-out command must not satisfy the next one."""
+    fake = FakeSer()
+    fake.reply = frame(b'{"channel":99}')   # stale reply
+    drained = []
+
+    def drain():
+        fake.reply = b""
+        drained.append(1)
+
+    fake.reset_input_buffer = drain
+    link = BridgeLink(fake)
+    link.open()
+    with pytest.raises(LinkTimeout):
+        link.ctrl({"cmd": "get", "key": "channel"}, timeout=0.2)
+    assert drained == [1]               # the drain actually ran
+
+
+def _install_fake_serial(monkeypatch, errno_value, message):
+    """Patch the deferred `import serial` in BridgeLink.open with a
+    module whose Serial(port, baud, **kw) raises SerialException."""
+    import sys
+    import types
+    import flrn.link as link_mod
+
+    class SerialException(OSError):
+        pass
+
+    def _open(*args, **kwargs):
+        raise SerialException(errno_value, message)
+
+    fake = types.ModuleType("serial")
+    fake.Serial = _open
+    monkeypatch.setattr(link_mod, "port_holder", lambda port: None)
+    monkeypatch.setitem(sys.modules, "serial", fake)
+
+
+def test_open_maps_busy_serial_error_to_port_busy(monkeypatch):
+    """exclusive=True open failing 'busy' maps to PortBusyError (this
+    covers the race the port_holder pre-check cannot see)."""
+    import errno
+    _install_fake_serial(monkeypatch, errno.EBUSY,
+                         "Device or resource busy")
+    link = BridgeLink("/dev/ttyUSB9")
+    with pytest.raises(PortBusyError):
+        link.open()
+
+
+def test_open_permission_error_stays_oserror(monkeypatch):
+    """EACCES + 'Permission denied' is NOT busy: it must stay OSError
+    (no PortBusyError) so the CLI can surface the dialout hint."""
+    import errno
+    _install_fake_serial(monkeypatch, errno.EACCES,
+                         "could not open port: Permission denied")
+    link = BridgeLink("/dev/ttyUSB9")
+    with pytest.raises(OSError) as e:
+        link.open()
+    assert not isinstance(e.value, PortBusyError)

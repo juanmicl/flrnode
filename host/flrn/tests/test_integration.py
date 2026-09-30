@@ -312,3 +312,34 @@ def test_cli_exit_code_fail_class():
         assert cli_mod.main(["stats", port]) == 1
     finally:
         pair.stop()
+
+
+# ---- Review-fix wave 2 ----
+
+
+def test_ctrl_skips_bridge_event_before_reply():
+    """FakeBridge emits an unsolicited §8 event ahead of every CTRL
+    reply; ctrl() must skip it and return the real reply."""
+    pair = FakeBridgePair(emit_event=True)
+    ports = pair.start()
+    from flrn.link import BridgeLink
+    link = BridgeLink(ports[0])
+    link.open()
+    try:
+        assert link.ctrl({"cmd": "get", "key": "channel"}) == {"channel": 1}
+    finally:
+        link.close()
+        pair.stop()
+
+
+def test_scan_skips_malformed_boot_channel():
+    """A boot line whose channel is not an int (malformed firmware
+    output) omits the port from the scan instead of aborting it with a
+    ValueError traceback."""
+    pair = FakeBridgePair(boot_channel=b'"six"')
+    port = pair.start()[0]
+    try:
+        from flrn.commands.scan import scan_bridges
+        assert scan_bridges(ports=[port]) == []
+    finally:
+        pair.stop()

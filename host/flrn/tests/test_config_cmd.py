@@ -34,6 +34,17 @@ def test_pmk_requires_yes():
         validate_set_preconditions(b, "pmk", "0011..", force=True, yes=False)
 
 
+def test_set_zero_bridges_is_clean_error_not_noop():
+    """`config set` (e.g. --all-bridges with rnsd holding every port)
+    against an EMPTY bridge list is a SystemExit with a hint — not a
+    silent {"applied": {}} success with exit 0."""
+    from flrn.commands.config import cmd_config_set
+    with pytest.raises(SystemExit) as e:
+        cmd_config_set([], "channel", 6, force=True)
+    assert "no bridges found" in str(e.value)
+    assert "systemctl --user stop rnsd" in str(e.value)
+
+
 def test_partial_apply_reports_desync(monkeypatch):
     # A applies, B rejects -> ConfigError naming the DESYNCED state and
     # the applied port; resets still ran on both (reset-then-raise).

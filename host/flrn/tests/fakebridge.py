@@ -104,9 +104,13 @@ class FakeBridge:
             # disagree_channel: a mis-provisioned bridge whose boot line
             # reports a DIFFERENT channel than the applied one
             ch = self.opts.get("disagree_channel", self.channel)
+            # boot_channel: raw JSON value for "channel", inserted
+            # verbatim — lets tests inject a malformed (non-integer)
+            # channel like b'"six"'.
+            ch_raw = self.opts.get("boot_channel") or str(ch).encode()
             line = (b'{"t":"boot","fw":"' + self.fw.encode()
                     + b'","mode":"bridge","channel":'
-                    + str(ch).encode()
+                    + ch_raw
                     + b',"mac":"' + DEFAULT_MAC.encode()
                     + b'","peer":"' + DEFAULT_PEER.encode()
                     + b'","warn":"dev keys"}')
@@ -199,6 +203,10 @@ class FakeBridge:
     def _ctrl(self, payload: bytes):
         if self.opts.get("silent"):
             return  # fully silent: no boot line AND no CTRL replies
+        if self.opts.get("emit_event"):
+            # unsolicited §8 event ahead of the reply — pins the host's
+            # event-skip discipline in BridgeLink.ctrl
+            self._send_framed(b'{"event":"air_rx","len":16}')
         try:
             req = json.loads(payload.decode())
         except ValueError:
