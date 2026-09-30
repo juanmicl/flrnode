@@ -38,7 +38,8 @@ Foreground for the acceptance run:
 
     rnsd -v
 
-Optional systemd unit (documented, not required for M2):
+Keep it running in tmux or screen (a systemd unit is not required for
+M2):
 
     ~/.local/bin/rnsd   # in tmux/screen, one per Pi
 

@@ -23,11 +23,11 @@ the gate results are pasted.
 
 ## Gate 1: suites green (pre-handoff, re-run to confirm)
 
-    cd firmware && pio test -e native          # 89/89 in 11 suites
+    cd firmware && pio test -e native          # 96/96 in 11 suites
     pio run -e d1_mini_pinger -e d1_mini_ponger -e d1_mini_bridge \
         -e esp32_dev_pinger -e esp32_dev_ponger -e esp32_dev_bridge
                                              # 6x SUCCESS
-    cd ../host/flrn && python -m pytest      # 43 passed
+    cd ../host/flrn && python -m pytest      # 58 passed
 
 ## Gate 2: flrn smoke over the air
 
@@ -48,12 +48,19 @@ the gate results are pasted.
 6. `flrn config set channel 6 --all-bridges` — `"effective":6` both;
    power-cycle both; boot lines show `"channel":6`;
    `flrn test /dev/ttyUSB0 /dev/ttyUSB1` → PASS on the new channel.
-7. **PMK rotation**: `flrn config set pmk
-   00112233445566778899AABBCCDDEEFF --all-bridges --yes` — bare
-   `{"ok":true}` (never echoes the key). The link re-keys:
-   `flrn test …` → PASS. **Reset ONE bridge** (either) — link returns:
-   `flrn test …` → PASS again (PMK survived in EEPROM on the reset
-   side — persistence discriminator).
+7. **PMK rotation** (keys apply to the radio at boot — one reboot per
+   change; the radio never re-keys live):
+   a. `flrn config set pmk 00112233445566778899AABBCCDDEEFF --port
+      /dev/ttyUSB0` (bridge A ONLY) — bare `{"ok":true}` (never echoes
+      the key). **Reboot A.** `flrn test …` → **FAIL** is expected
+      (A runs the configured key, B still runs the public dev keys —
+      this proves the key is actually applied, not dead config).
+   b. Set the SAME pmk on B (`--port /dev/ttyUSB1`), **reboot B** →
+      `flrn test …` → PASS (both bridges now on the configured key).
+   c. **Reset A again** (unplug/replug) → `flrn test …` → PASS
+      (A reloaded the pmk from EEPROM — the persistence
+      discriminator; a non-persisted key would come back as dev
+      keys and FAIL).
 8. `flrn setup` — writes/validates `~/.reticulum/config` (an existing
     config is kept). Do this before the doctor step: rnsd is stopped
     during these gates, so the topology row is OK only via a valid

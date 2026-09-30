@@ -22,6 +22,20 @@ ETSI EN 300 328 / EU decision 2021/1067.
   power and warn. Configuration surfaces must never offer settings that
   exceed EIRP.
 
+## Link encryption keys
+
+- ESP-NOW CCMP keys come from the config store: `flrn config set pmk
+  <32 hex>` persists a 16-byte key applied to the radio at boot (as
+  PMK and, in the current single-peer model, as the peer LMK). A
+  stored zero key falls back to the compiled-in development
+  placeholders, and the boot line warns while that is the case.
+- The placeholders are public (in this repository). L1
+  confidentiality with default keys is therefore nil; the
+  confidentiality guarantee is Reticulum's end-to-end crypto, which
+  CCMP only complements.
+- Rotation: set the same pmk on both bridges (`--all-bridges`) and
+  reboot each once.
+
 ## Listen-before-talk
 
 - ESP-NOW tier: transmissions are ordinary IEEE 802.11 frames; the WiFi

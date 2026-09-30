@@ -140,3 +140,32 @@ hardware):
   STOP: the human runs TEST-CHECKLIST.md gates 1-3 (incl. the PMK
   single-reset persistence discriminator and the owner twine upload)
   and pastes results here; M3 closes only then.
+- 2026-09-30 (pre-release review): full-repo review wave before public
+  GitHub upload (independent firmware + host review lanes, then fix
+  lanes; nothing committed — owner reviews the tree). Firmware:
+  configured pmk now actually reaches the radio (setKeys, applied in
+  begin() as PMK and — single-peer model — peer LMK; zero key keeps
+  the dev-key fallback, boot "warn" reports which); ARQ spurious-NAK
+  storm fixed to the §5.3 trigger (+25 ms aged latch, edge-latched);
+  receiver reboot baselines mid-stream (kills the one-way dead link
+  until seq wrap); sender parks seq allocation beyond cum+W (§5.1
+  MUST); ACK on any slot completion + tick/GC path; modular millis
+  deltas; bridge txFail wired; stats line 512. Host: install.sh PEP
+  668 cascade + root guard + ~/.local/bin probe; flrn OSError/dialout
+  hint, zero-bridges clean error, ctrl() drain + event skip,
+  exclusive=True→PortBusy, Ctrl-C exit 0, -n 1-255, doctor via
+  configparser, conf.example key fixes, LICENSE ships in sdist+wheel,
+  [test] extra, script nits. Docs: protocol.md §5.2 B3 bitmap header
+  (pre-amendment leftover), §5.5 aligned to the 14-key schema, §2 raw
+  boot-lines decision, §3 single-peer known limitation, §8
+  stats_period honest semantics (emitter deferred); compliance.md
+  link-keys section; README EN/ES checkbox sync + known limitation;
+  host-setup.md systemd mislabel. TEST-CHECKLIST gate 1 counts
+  updated; gate 2.7 rewritten as apply/pair/persist with a negative
+  control (the old discriminator passed vacuously while pmk was dead
+  config). Counts: native 96/96 in 11 suites (test_p08 rewritten, 7
+  new ARQ tests), pytest 58/58 (15 new), 7/7 envs green. Deferred
+  (owner decisions): oDropped_ not in the stats schema (coordinated
+  fw+host wave, post-gates), fw version scheme, native-env transport
+  compile check (CI gap), fix-pi-sd-wifi.sh placement, ESP8266 UART
+  ring soak → M4 checklist.

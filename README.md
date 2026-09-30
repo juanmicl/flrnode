@@ -3,7 +3,7 @@
 **The encrypted 1 Mbps radio link for makers: $15, 2 km, no license.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
-[![PlatformIO](https://img.shields.io/badge/build-PlatformIO-orange?style=for-the-badge)](firmware/)
+[![CI](https://img.shields.io/github/actions/workflow/status/juanmicl/flrnode/ci.yml?style=for-the-badge&label=CI)](https://github.com/juanmicl/flrnode/actions/workflows/ci.yml)
 
 [README en español](README.es.md)
 
@@ -64,6 +64,9 @@ bench-verified results. M3 (`flrn` CLI, this quick start) is
 code-complete with a headless integration suite; M4 brings the FLRC
 tier and published benchmarks.
 
+Known limitation today: each bridge pairs with one peer — links are
+point-to-point until multi-peer support lands with M4/M5.
+
 ## Supported hardware
 
 | Board | Cost | Transports | Notes |
@@ -121,8 +124,8 @@ region with a 2.4 GHz ISM band.** Always check your local rules.
 
 ## Roadmap
 
-- [ ] M1: ESP-NOW transport, two-node link
-- [ ] M2: Reticulum integration (Sideband/MeshChat work)
+- [x] M1: ESP-NOW transport, two-node link
+- [x] M2: Reticulum integration (Sideband/MeshChat work)
 - [ ] M3: `flrn` CLI + one-line host installer
 - [ ] M4: FLRC transport (SX1280) + published benchmarks
 - [ ] M5: Web flasher + v1.0 launch

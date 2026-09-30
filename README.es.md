@@ -3,7 +3,7 @@
 **El enlace radio cifrado de 1 Mbps para makers: 15 $, 2 km, sin licencia.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
-[![PlatformIO](https://img.shields.io/badge/build-PlatformIO-orange?style=for-the-badge)](firmware/)
+[![CI](https://img.shields.io/github/actions/workflow/status/juanmicl/flrnode/ci.yml?style=for-the-badge&label=CI)](https://github.com/juanmicl/flrnode/actions/workflows/ci.yml)
 
 [English README](README.md)
 
@@ -71,6 +71,10 @@ M1 (transporte ESP-NOW) y M2 (puente Reticulum) están cerrados con
 resultados verificados en banco. M3 (CLI `flrn`, este inicio rápido)
 está completo en código con suite de integración headless; M4 trae el
 nivel FLRC y benchmarks publicados.
+
+Limitación conocida hoy: cada puente se empareja con un solo par —
+los enlaces son punto a punto hasta que llegue el soporte multi-par
+en M4/M5.
 
 ## Hardware soportado
 

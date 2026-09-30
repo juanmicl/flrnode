@@ -60,6 +60,11 @@ There is NO inner type byte and NO FCS. Integrity is RNS's own
    resync counted. Oversize run: chunked drop, one resync per chunk.
 6. Inter-frame silence has no semantic. Back-to-back frames allowed.
 
+Boot and error lines are emitted as raw (un-framed) ASCII on the
+same UART — before HDLC operation and on fatal paths. This is
+deliberate: flrn's boot probe reads them without an HDLC layer, and
+RNS's deframer discards the stray run at the next flag byte.
+
 Amendment (bench-discovered at gate 3, 2026-09-28): the pre-bench
 spec assumed `[TYPE, PAYLOAD, FCS_LO, FCS_HI]` with CRC-16/XMODEM —
 RNS's actual SerialInterface uses NONE of that. The CRC check dropped
@@ -83,6 +88,11 @@ L2 delivers `(peer_key, L3 frame)` upward and accepts `(peer_key|null, frame)`.
   separate checksum.
 
 Peers are learned implicitly. Peer table: 8 entries max, LRU eviction.
+
+Known limitation (initial release): the ESP-NOW bridge firmware
+pairs with a single build-time peer MAC (`FLR_PEER_MAC`); the learned
+LRU table above is the target design and lands with multi-peer
+support (M4/M5). Until then a FLRNode link is point-to-point.
 
 ---
 
@@ -151,7 +161,7 @@ NEW → FRAGMENTED → IN_FLIGHT ── cumulative ACK ≥ SEQ ──► DONE
 ```
 B0 = ver|1|0000
 SEQ = cumulative ACK value N ("every frame ≤ N fully delivered")
-B3 = [resv:4][bitmap_hi_bit_map:4]  → 8-bit bitmap occupies B3 fully
+B3 = 8-bit reassembly bitmap (the full byte; see semantics below)
 PAYLOAD: none
 ```
 
@@ -194,9 +204,9 @@ respecting RETRY flag).
 
 ### 5.5 Flow & error accounting (mandatory counters)
 
-`tx_frames tx_frags tx_retries tx_dropped rx_frags rx_delivered
-rx_dups rx_stale rx_crc_fail rx_window_overflow nak_sent ack_sent`
-All exposed via CTRL (§8). Airtime (ms) counted at L1.
+The normative counter set is the 14-key stats schema of §8
+(`rx_crc_fail` from the pre-amendment draft was removed with the FCS:
+no integrity check exists at this layer). Airtime (ms) counted at L1.
 
 ---
 
@@ -279,8 +289,10 @@ never echoing the key). Valid keys and their semantics:
 - `tx_power` (dBm conducted): persisted, clamped to 17 (the ESP-NOW
   compliance cap; see docs/compliance.md); the reply carries the
   effective value. The clamp runs on set AND on boot-load.
-- `stats_period` (seconds): immediate effect, no reboot; 1-3600
-  accepted, ≤ 0 or >3600 falls back to 5.
+- `stats_period` (seconds): accepted without reboot and persisted;
+  1-3600 accepted, ≤ 0 or >3600 falls back to 5. The periodic stats
+  emitter is deferred (v1 bridges originate no unsolicited wire
+  frames); hosts poll with `{"cmd":"stats"}` (flrn `stats --watch`).
 - `rate`: get and set are refused with `unsupported_transport` on the
   ESP-NOW transport (no runtime rate; revisited with the FLRC tier).
 - `node_id`: read-only; get returns the bridge's own MAC as upper-case
